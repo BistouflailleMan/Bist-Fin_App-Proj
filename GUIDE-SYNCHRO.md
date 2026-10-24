@@ -79,18 +79,23 @@ Prérequis : Node.js installé (déjà fait) et le dossier de l'appli préparé 
 
 1. Ouvrez **PowerShell** dans le dossier de l'appli (dans l'Explorateur : clic droit dans le dossier → **Ouvrir dans le terminal**).
 2. Une seule fois : `npm install`
-3. Reliez le dépôt GitHub (remplacez VOTREPSEUDO) :
+3. Enregistrez dans git les réglages faits aux étapes B et C (pseudo et clés publiques) :
+   ```
+   git add -A
+   git commit -m "Configuration"
+   ```
+4. Reliez le dépôt GitHub (remplacez VOTREPSEUDO) :
    ```
    git remote add origin https://github.com/VOTREPSEUDO/appli-finance.git
    git push -u origin main
    ```
    Windows peut ouvrir une fenêtre de connexion GitHub : connectez-vous.
-4. Attendez 1 à 2 minutes : sur GitHub, onglet **Actions**, la tâche « Publier la version web » doit passer au vert. La version mobile est alors en ligne.
-5. Publiez la première version avec les programmes Windows :
+5. Attendez 1 à 2 minutes : sur GitHub, onglet **Actions**, la tâche « Publier la version web » doit passer au vert. La version mobile est alors en ligne.
+6. Publiez la première version avec les programmes Windows :
    ```
    ./publier.ps1
    ```
-   Choisissez le type (1 = correctif, 2 = nouveauté, 3 = majeure), collez votre jeton quand il est demandé. À la fin, les fichiers `.exe` apparaissent dans l'onglet **Releases** du dépôt sur GitHub. Si GitHub propose un brouillon (« Draft »), ouvrez-le et cliquez sur **Publish release**.
+   Choisissez le type (1 = correctif, 2 = nouveauté, 3 = majeure), collez votre jeton quand il est demandé. À la fin, les fichiers `.exe` apparaissent dans l'onglet **Releases** du dépôt sur GitHub.
 
 Si PowerShell refuse d'exécuter le script : tapez `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` puis `O` (Oui), et recommencez.
 
