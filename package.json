@@ -32,7 +32,7 @@
       "buildResources": "build"
     },
     "publish": [
-      { "provider": "github", "owner": "VOTRE_PSEUDO_GITHUB", "repo": "appli-finance", "releaseType": "release" }
+      { "provider": "github", "owner": "BistouflailleMan", "repo": "Bist-Fin_App-Proj", "releaseType": "release" }
     ],
     "files": [
       "main.js",
