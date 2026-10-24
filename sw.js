@@ -1,4 +1,4 @@
-const VERSION = "1.1.0";
+const VERSION = "1.1.1";
 // ═══════════ Appli Finance — service worker (hors ligne) ═══════════
 "use strict";
 
