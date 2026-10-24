@@ -1,7 +1,7 @@
 {
   "name": "appli-finance",
   "productName": "Appli Finance",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Suivi des dépenses personnelles — jour, semaine, mois, par catégorie",
   "author": "Appli Finance",
   "main": "main.js",
