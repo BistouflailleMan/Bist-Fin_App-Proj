@@ -1,0 +1,90 @@
+/* ═══════════════════════════════════════════════════════════
+   Appli Finance — base commune (propriétaire : superviseur)
+   Même identité que Track Record : bleu nuit, accent doré,
+   chiffres en monospace.
+   ═══════════════════════════════════════════════════════════ */
+:root{
+  --ink:      #0D1520;   /* fond général    */
+  --panel:    #131E2B;   /* fond des blocs  */
+  --panel-2:  #182535;   /* survol / champs */
+  --rule:     #22303F;   /* filets marqués  */
+  --rule-soft:#1A2634;   /* filets discrets */
+  --fg:       #E7EEF4;
+  --fg-dim:   #7E92A6;
+  --fg-faint: #526375;
+  --gain:     #6FD5A3;
+  --gain-bg:  #14432F;
+  --loss:     #F08A80;
+  --loss-bg:  #4A1A17;
+  --accent:   #DFA65C;
+  --accent-bg:#3A2A16;
+  --radius:   6px;
+  --gap:      14px;
+  --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --num: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+*{box-sizing:border-box;}
+html,body{margin:0;background:var(--ink);}
+body{color:var(--fg);font-family:var(--ui);font-size:15px;line-height:1.4;
+  padding:22px 20px 60px;font-feature-settings:"tnum" 1;-webkit-font-smoothing:antialiased;
+  -webkit-tap-highlight-color:transparent;}
+.wrap{max-width:1220px;margin:0 auto;}
+[hidden]{display:none !important;}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
+button,input,select,textarea{font:inherit;color:inherit;}
+
+.eyebrow{font-family:var(--num);font-size:10px;letter-spacing:.28em;text-transform:uppercase;color:var(--fg-faint);}
+.num{font-family:var(--num);font-variant-numeric:tabular-nums;}
+h1{font-size:24px;font-weight:600;letter-spacing:-.01em;margin:6px 0 0;}
+
+/* ── Boutons ── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:34px;
+  background:var(--panel);border:1px solid var(--rule);color:var(--fg);padding:7px 13px;
+  border-radius:var(--radius);cursor:pointer;font-size:13px;}
+.btn:hover{border-color:var(--fg-faint);}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#1B1206;font-weight:600;}
+.btn-primary:hover{filter:brightness(1.08);border-color:var(--accent);}
+.btn-ghost{background:transparent;color:var(--fg-dim);font-family:var(--num);font-size:10px;
+  letter-spacing:.14em;text-transform:uppercase;}
+.btn-ghost:hover{color:var(--fg);}
+.btn-danger{background:transparent;border-color:var(--loss-bg);color:var(--loss);}
+.btn-icon{min-width:34px;padding:6px;}
+
+/* ── Blocs ── */
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:var(--radius);
+  display:flex;flex-direction:column;overflow:hidden;min-width:0;}
+.panel-h{font-family:var(--num);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--fg-faint);padding:10px 14px;border-bottom:1px solid var(--rule-soft);
+  display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.panel-b{flex:1 1 auto;padding:14px;min-width:0;}
+
+/* ── Champs ── */
+.field{display:flex;flex-direction:column;gap:6px;}
+.field > label{font-family:var(--num);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg-faint);}
+.field input,.field select,.field textarea{width:100%;background:var(--ink);border:1px solid var(--rule);
+  border-radius:var(--radius);padding:9px 10px;color:var(--fg);}
+.field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--accent);}
+
+/* ── Modale (centrée) et feuille (bas d'écran sur mobile) ── */
+.modal,.sheet{position:fixed;inset:0;z-index:50;background:rgba(5,9,14,.66);
+  display:flex;align-items:center;justify-content:center;padding:16px;}
+.modal-box,.sheet-box{background:var(--panel);border:1px solid var(--rule);border-radius:10px;
+  width:100%;max-width:520px;max-height:calc(100vh - 32px);overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.55);}
+@media (max-width:700px){
+  .sheet{align-items:flex-end;padding:0;}
+  .sheet-box{max-width:none;border-radius:16px 16px 0 0;padding-bottom:var(--safe-b);max-height:92vh;}
+}
+
+/* ── Mise en page Jour (les modules remplissent les blocs) ── */
+.view{margin-top:18px;}
+.day-layout{display:grid;gap:var(--gap);
+  grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);
+  grid-template-areas:"entry chart" "list chart";}
+#entry-panel{grid-area:entry;}
+#day-chart{grid-area:chart;}
+#day-list{grid-area:list;}
+@media (max-width:900px){
+  body{padding:14px 12px calc(96px + var(--safe-b));}
+  .day-layout{grid-template-columns:minmax(0,1fr);grid-template-areas:"chart" "entry" "list";}
+}

@@ -1,0 +1,79 @@
+{
+  "name": "appli-finance",
+  "productName": "Appli Finance",
+  "version": "1.1.0",
+  "description": "Suivi des dépenses personnelles — jour, semaine, mois, par catégorie",
+  "author": "Appli Finance",
+  "main": "main.js",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "serve": "npx serve .",
+    "stamp": "node scripts/stamp-version.js",
+    "dist": "npm run stamp && electron-builder --win --x64",
+    "dist:portable": "npm run stamp && electron-builder --win portable --x64",
+    "dist:setup": "npm run stamp && electron-builder --win nsis --x64",
+    "release": "npm run stamp && electron-builder --win --x64 --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "6.3.9"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "com.applifinance.app",
+    "productName": "Appli Finance",
+    "copyright": "Copyright © 2026 Appli Finance",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "publish": [
+      { "provider": "github", "owner": "VOTRE_PSEUDO_GITHUB", "repo": "appli-finance" }
+    ],
+    "files": [
+      "main.js",
+      "index.html",
+      "package.json",
+      "css/**",
+      "js/**",
+      "icons/**",
+      "manifest.webmanifest",
+      "sw.js",
+      "build/icon.ico",
+      "!tests/**",
+      "!supabase/**",
+      "!scripts/**",
+      "!.github/**",
+      "!**/*.md",
+      "!publier.ps1"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Appli Finance",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "language": "1036",
+      "artifactName": "Appli-Finance-Setup-${version}.${ext}",
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "Appli-Finance-Portable-${version}.${ext}"
+    }
+  }
+}

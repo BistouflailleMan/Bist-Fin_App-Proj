@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.claude/
+*.log
+.env
+.env.*
+donnees-finances*.json
+window-state.json
+*.bak.json

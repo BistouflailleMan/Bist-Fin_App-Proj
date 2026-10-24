@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tests — FIN.sync</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; background: #0D1520; color: #E6EDF5; margin: 0; padding: 24px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  #total { font-size: 16px; font-weight: 600; margin: 8px 0 16px; }
+  #total.ok { color: #6FD5A3; }
+  #total.ko { color: #F08A80; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { padding: 3px 0; border-bottom: 1px solid #1c2a3c; }
+  li.ok .mark { color: #6FD5A3; }
+  li.ko .mark { color: #F08A80; font-weight: 700; }
+  .mark { display: inline-block; width: 1.5em; }
+  .err { display: block; margin-left: 1.5em; color: #F08A80; font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Tests — FIN.sync</h1>
+<div id="total">Exécution…</div>
+<ul id="out"></ul>
+
+<!-- Pas de js/config.js ici : la configuration est posée par les tests. -->
+<script src="../js/util.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/sync.js"></script>
+<script>
+(function(){
+  "use strict";
+  const S = FIN.store, Y = FIN.sync;
+  const tests = [];
+  const test = (name, fn) => tests.push({ name, fn });
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // ─── Assertions ───
+  function ok(cond, msg){ if (!cond) throw new Error(msg || "assertion fausse"); }
+  function eq(a, b, msg){
+    const x = JSON.stringify(a), y = JSON.stringify(b);
+    if (x !== y) throw new Error((msg ? msg + " — " : "") + "attendu " + y + ", reçu " + x);
+  }
+  async function rejects(p, re, msg){
+    try { await p; } catch (e) {
+      if (re && !re.test(e.message)) throw new Error((msg || "") + " message inattendu : " + e.message);
+      return e;
+    }
+    throw new Error((msg || "devait échouer") + " (aucune erreur)");
+  }
+
+  // ─── Adaptateur mémoire (un par « appareil ») ───
+  function memAdapter(){
+    let saved = null;
+    return {
+      kind: "local",
+      async load(){ return saved === null ? null : JSON.parse(JSON.stringify(saved)); },
+      async save(o){ saved = JSON.parse(JSON.stringify(o)); }
+    };
+  }
+
+  // ─── Faux serveur Supabase en mémoire (Auth + table items avec la règle LWW du trigger) ───
+  const ANON = "cle-anon-de-test";
+  const URL_BASE = "https://faux.supabase.test";
+  function makeServer(){
+    const srv = {
+      users: new Map(), rows: new Map(), tokens: new Map(), refreshTokens: new Map(),
+      seq: 0, lastMs: 0, confirm: false, ttl: 3600, offline: false, failAll: null, delay: 1,
+      refreshCalls: 0, count401: 0, log: [], inFlight: 0, peak: 0
+    };
+    const json = (status, obj) => new Response(obj === undefined ? null : JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
+    const newSession = user => {
+      const n = ++srv.seq;
+      const access = "acc-" + n, refresh = "ref-" + n;
+      srv.tokens.set(access, { user, exp: Date.now() + srv.ttl * 1000 });
+      srv.refreshTokens.set(refresh, user);
+      return { access_token: access, refresh_token: refresh, expires_in: srv.ttl, token_type: "bearer", user: { id: user.id, email: user.email } };
+    };
+    const nextMs = () => { srv.lastMs = Math.max(Date.now(), srv.lastMs + 1); return srv.lastMs; };
+    const fmt = ms => new Date(ms).toISOString().replace("Z", "456+00:00");   // précision « microsecondes » + décalage « +00:00 »
+
+    function handle(url, init){
+      const u = new URL(url);
+      const method = init.method || "GET";
+      const h = init.headers || {};
+      const body = init.body ? JSON.parse(init.body) : null;
+      srv.log.push({ method, path: u.pathname, search: u.search, n: Array.isArray(body) ? body.length : 0 });
+      if (h.apikey !== ANON) return json(401, { message: "Invalid API key" });
+      if (srv.failAll) return json(srv.failAll.status, srv.failAll.body || { message: "panne" });
+
+      if (u.pathname === "/auth/v1/signup") {
+        if (!body.email || body.email.indexOf("@") < 1) return json(400, { error_code: "email_address_invalid", msg: "Unable to validate email address: invalid format" });
+        if (!body.password || body.password.length < 6) return json(422, { error_code: "weak_password", msg: "Password should be at least 6 characters." });
+        if (srv.users.has(body.email)) return json(422, { error_code: "user_already_exists", msg: "User already registered" });
+        const user = { id: "u" + (srv.users.size + 1), email: body.email, password: body.password, confirmed: !srv.confirm };
+        srv.users.set(user.email, user);
+        return user.confirmed ? json(200, newSession(user)) : json(200, { id: user.id, email: user.email });
+      }
+      if (u.pathname === "/auth/v1/token") {
+        const grant = u.searchParams.get("grant_type");
+        if (grant === "password") {
+          const user = srv.users.get(body.email);
+          if (!user || user.password !== body.password) return json(400, { error: "invalid_grant", error_code: "invalid_credentials", msg: "Invalid login credentials" });
+          if (!user.confirmed) return json(400, { error: "invalid_grant", error_code: "email_not_confirmed", msg: "Email not confirmed" });
+          return json(200, newSession(user));
+        }
+        if (grant === "refresh_token") {
+          srv.refreshCalls++;
+          const user = srv.refreshTokens.get(body.refresh_token);
+          if (!user) return json(400, { error: "invalid_grant", error_code: "refresh_token_not_found", msg: "Invalid Refresh Token: Refresh Token Not Found" });
+          srv.refreshTokens.delete(body.refresh_token);   // jeton à usage unique
+          return json(200, newSession(user));
+        }
+        return json(400, { msg: "grant inconnu" });
+      }
+      if (u.pathname === "/auth/v1/logout") return json(204);
+
+      if (u.pathname === "/rest/v1/items") {
+        const m = /^Bearer (.+)$/.exec(h.Authorization || "");
+        const tk = m && srv.tokens.get(m[1]);
+        if (!tk || tk.exp < Date.now()) { srv.count401++; return json(401, { code: "PGRST301", message: "JWT expired" }); }
+        const uid = tk.user.id;
+        if (method === "POST") {
+          if (decodeURIComponent(u.search).indexOf("on_conflict=user_id,id") < 0) return json(400, { message: "on_conflict manquant" });
+          if (!/resolution=merge-duplicates/.test(h.Prefer || "") || !/return=minimal/.test(h.Prefer || "")) return json(400, { message: "Prefer incorrect" });
+          if (!Array.isArray(body)) return json(400, { message: "tableau attendu" });
+          for (const rec of body) {
+            if ("user_id" in rec) return json(400, { message: "user_id ne doit pas être envoyé" });
+            if (!rec.id || !rec.type || typeof rec.updated_at !== "number" || typeof rec.deleted !== "boolean") return json(400, { message: "record invalide" });
+            const key = uid + "|" + rec.id, old = srv.rows.get(key);
+            if (old && rec.updated_at < old.updated_at) continue;          // trigger : le plus récent gagne (ligne ignorée)
+            const ms = nextMs();
+            srv.rows.set(key, { user_id: uid, id: rec.id, type: rec.type, data: rec.data, deleted: rec.deleted, updated_at: rec.updated_at, _ms: ms, server_at: fmt(ms) });
+          }
+          return json(201);
+        }
+        if (method === "GET") {
+          const gt = u.searchParams.get("server_at");
+          let after = -Infinity;
+          if (gt) { after = Date.parse(gt.replace(/^gt\./, "")); if (isNaN(after)) return json(400, { message: "curseur illisible" }); }
+          if (u.searchParams.get("order") !== "server_at.asc") return json(400, { message: "order attendu" });
+          const limit = Number(u.searchParams.get("limit") || 1000);
+          const list = Array.from(srv.rows.values()).filter(r => r.user_id === uid && r._ms > after)
+            .sort((a, b) => a._ms - b._ms).slice(0, limit)
+            .map(r => ({ user_id: r.user_id, id: r.id, type: r.type, data: r.data, deleted: r.deleted, updated_at: r.updated_at, server_at: r.server_at }));
+          return json(200, list);
+        }
+      }
+      return json(404, { message: "route inconnue" });
+    }
+
+    srv.fetch = async (url, init) => {
+      if (srv.offline) throw new TypeError("Failed to fetch");
+      srv.inFlight++; srv.peak = Math.max(srv.peak, srv.inFlight);
+      try { await sleep(srv.delay); return handle(url, init || {}); }
+      finally { srv.inFlight--; }
+    };
+    srv.addUser = (email, password, confirmed) => { srv.users.set(email, { id: "u" + (srv.users.size + 1), email, password, confirmed: confirmed !== false }); };
+    srv.expireAccess = () => { srv.tokens.forEach(t => { t.exp = 0; }); };
+    srv.revokeRefresh = () => { srv.refreshTokens.clear(); };
+    srv.row = id => { for (const r of srv.rows.values()) if (r.id === id) return r; return null; };
+    srv.count = (method, part) => srv.log.filter(l => l.method === method && l.path.indexOf(part) >= 0).length;
+    return srv;
+  }
+
+  // ─── Mise en place : un seul store, un adaptateur mémoire par « appareil » ───
+  let srv, devices, current, statuses;
+  const MAIL = "utilisateur@exemple.test", PWD = "motdepasse1";
+  const realFetch = window.fetch;
+  FIN.bus.on("sync:status", p => { if (statuses) statuses.push(p.state); });
+
+  async function useDevice(name){
+    if (current) await S.flush();
+    if (!devices[name]) devices[name] = memAdapter();
+    S.setAdapter(devices[name]);
+    await S.init();
+    current = name;
+  }
+  async function fresh(opts){
+    srv = makeServer();
+    devices = {}; current = null; statuses = [];
+    window.FIN_CONFIG = { supabaseUrl: URL_BASE, supabaseAnonKey: ANON, githubRepo: "" };
+    window.fetch = (u, i) => srv.fetch(u, i);
+    if (!(opts && opts.keepUser)) srv.addUser(MAIL, PWD);
+    await useDevice("A");
+  }
+  // signIn lance la première synchro en arrière-plan (état « syncing » posé tout de suite) : on attend qu'elle se termine.
+  async function login(){
+    await Y.signIn(MAIL, PWD);
+    while (Y.status().state === "syncing") await sleep(5);
+  }
+  const dirtyCount = () => S.syncRecords({ dirtyOnly: true }).length;
+  const today = "2026-10-24";
+  const exp = over => Object.assign({ date: today, amount: 10, categoryId: "food", note: "" }, over || {});
+
+  // ═══ Configuration ═══
+  test("non configuré : état « off », aucune requête, connexion refusée", async () => {
+    await fresh();
+    window.FIN_CONFIG = {};
+    eq(Y.isConfigured(), false);
+    eq(Y.status().state, "off");
+    await Y.syncNow();
+    eq(Y.status().state, "off");
+    await rejects(Y.signIn(MAIL, PWD), /configur/i);
+    await rejects(Y.signUp(MAIL, PWD), /configur/i);
+    eq(srv.log.length, 0, "aucune requête réseau");
+    window.FIN_CONFIG = { supabaseUrl: URL_BASE, supabaseAnonKey: "" };
+    eq(Y.isConfigured(), false, "clé manquante");
+    window.FIN_CONFIG = { supabaseUrl: URL_BASE, supabaseAnonKey: ANON };
+    eq(Y.isConfigured(), true);
+  });
+
+  // ═══ Compte ═══
+  test("signUp avec confirmation par email : needsConfirmation, pas de session", async () => {
+    await fresh({ keepUser: true });
+    srv.confirm = true;
+    const r = await Y.signUp(MAIL, PWD);
+    eq(r, { needsConfirmation: true });
+    eq(S.getSyncState().session, null);
+    eq(Y.status().state, "signedout");
+    const err = await rejects(Y.signIn(MAIL, PWD), /pas encore confirmé/i);
+    ok(/lien/.test(err.message), "explique quoi faire");
+    srv.users.get(MAIL).confirmed = true;
+    await login();
+    eq(Y.status().state, "idle");
+    eq(Y.status().email, MAIL);
+  });
+  test("signUp sans confirmation : connecté directement et synchronisé", async () => {
+    await fresh({ keepUser: true });
+    S.addExpense(exp({ note: "avant compte" }));
+    const r = await Y.signUp(MAIL, PWD);
+    eq(r, { needsConfirmation: false });
+    await Y.syncNow();
+    eq(Y.status().state, "idle");
+    ok(srv.row(S.getExpenses({})[0].id), "donnée locale envoyée");
+    ok(Y.status().lastSyncAt > 0, "lastSyncAt");
+  });
+  test("erreurs d'authentification en français", async () => {
+    await fresh();
+    await rejects(Y.signIn(MAIL, "mauvais-mdp"), /^Email ou mot de passe incorrect$/);
+    await rejects(Y.signIn("inconnu@exemple.test", PWD), /Email ou mot de passe incorrect/);
+    srv.log.length = 0;
+    await rejects(Y.signUp("a@exemple.test", "123"), /Mot de passe trop court \(6 caractères minimum\)/);
+    eq(srv.log.length, 0, "vérifié avant d'appeler le serveur");
+    await rejects(Y.signUp(MAIL, PWD), /existe déjà/);
+    await rejects(Y.signUp("pasunemail", PWD), /invalide/i);
+    srv.failAll = { status: 500 };
+    await rejects(Y.signIn(MAIL, PWD), /serveur/i);
+    srv.failAll = { status: 429, body: { error_code: "over_request_rate_limit" } };
+    await rejects(Y.signIn(MAIL, PWD), /Trop de tentatives/);
+    srv.failAll = null;
+    srv.offline = true;
+    await rejects(Y.signIn(MAIL, PWD), /^Pas de connexion internet$/);
+    srv.offline = false;
+    eq(S.getSyncState().session, null);
+  });
+  test("signOut : garde les données locales, efface la session, plus aucune synchro", async () => {
+    await fresh();
+    await login();
+    const e = S.addExpense(exp({ note: "reste" }));
+    await Y.syncNow();
+    await Y.signOut();
+    eq(S.getSyncState().session, null);
+    eq(S.getSyncState().email, null);
+    eq(Y.status().state, "signedout");
+    eq(srv.count("POST", "/auth/v1/logout"), 1);
+    ok(S.getExpense(e.id), "données locales conservées");
+    srv.log.length = 0;
+    await Y.syncNow();
+    eq(srv.log.length, 0, "aucune requête une fois déconnecté");
+    eq(Y.status().state, "signedout");
+  });
+  test("le jeton et le mot de passe ne passent jamais dans la console", async () => {
+    await fresh();
+    const seen = [];
+    const old = { log: console.log, warn: console.warn, error: console.error, info: console.info };
+    ["log", "warn", "error", "info"].forEach(k => { console[k] = (...a) => seen.push(a.map(String).join(" ")); });
+    try { await login(); await Y.signOut(); } finally { Object.assign(console, old); }
+    ok(!seen.some(l => l.indexOf(PWD) >= 0 || /acc-\d|ref-\d/.test(l)), "rien de sensible dans la console");
+  });
+
+  // ═══ Synchronisation entre deux appareils ═══
+  test("ajout sur A → visible sur B (et rien de sale après la synchro)", async () => {
+    await fresh();
+    await login();
+    const e = S.addExpense(exp({ note: "depuis A", amount: 42.5 }));
+    const i = S.addIncome({ date: today, amount: 1800, kind: "salary" });
+    S.setSettings({ weekStart: 0 });
+    await Y.syncNow();
+    eq(Y.status().state, "idle");
+    eq(dirtyCount(), 0, "liste « à envoyer » vidée");
+    ok(srv.row(e.id) && srv.row(i.id) && srv.row("settings"), "présents sur le serveur");
+    eq(srv.row(e.id).type, "expense");
+    await useDevice("B");
+    eq(S.getExpenses({}).length, 0);
+    await login();
+    eq(Y.status().state, "idle");
+    eq([S.getExpense(e.id).note, S.getExpense(e.id).amount], ["depuis A", 42.5]);
+    eq(S.getIncome(i.id).amount, 1800);
+    eq(S.getSettings().weekStart, 0);
+    eq(dirtyCount(), 0, "ce qui vient du cloud n'est pas renvoyé");
+  });
+  test("catégorie personnalisée : la dépense qui l'utilise arrive avec sa catégorie", async () => {
+    await fresh();
+    await login();
+    const c = S.addCategory({ name: "Animaux", icon: "🐶", color: "#123456" });
+    const e = S.addExpense(exp({ categoryId: c.id }));
+    await Y.syncNow();
+    await useDevice("B");
+    await login();
+    eq(S.getCategory(c.id).name, "Animaux");
+    eq(S.getExpense(e.id).categoryId, c.id);
+  });
+  test("modification propagée dans les deux sens", async () => {
+    await fresh();
+    await login();
+    const e = S.addExpense(exp({ note: "v1" }));
+    await Y.syncNow();
+    await useDevice("B"); await login();
+    S.updateExpense(e.id, { note: "v2-B", amount: 5 });
+    await Y.syncNow();
+    await useDevice("A"); await Y.syncNow();
+    eq([S.getExpense(e.id).note, S.getExpense(e.id).amount], ["v2-B", 5]);
+  });
+  test("suppression propagée (tombstone), sans résurrection", async () => {
+    await fresh();
+    await login();
+    const e = S.addExpense(exp({ note: "à supprimer" }));
+    await Y.syncNow();
+    await useDevice("B"); await login();
+    ok(S.getExpense(e.id), "B l'a reçue");
+    S.deleteExpense(e.id);
+    await Y.syncNow();
+    eq(srv.row(e.id).deleted, true);
+    eq(srv.row(e.id).data, null);
+    await useDevice("A");
+    await Y.syncNow();
+    eq(S.getExpense(e.id), null, "supprimée sur A");
+    eq(JSON.parse(S.exportJSON()).deleted.map(t => t.id), [e.id]);
+    await Y.syncNow();
+    eq(S.getExpense(e.id), null, "ne revient pas");
+    eq(dirtyCount(), 0);
+  });
+  test("restauration (annuler une suppression) propagée", async () => {
+    await fresh();
+    await login();
+    const e = S.addExpense(exp({ note: "oups" }));
+    await Y.syncNow();
+    const d = S.deleteExpense(e.id);
+    await Y.syncNow();
+    S.restoreExpense(d);
+    await Y.syncNow();
+    eq(srv.row(e.id).deleted, false);
+    await useDevice("B"); await login();
+    eq(S.getExpense(e.id).note, "oups");
+  });
+  test("conflit : la modification la plus récente gagne (la plus ancienne arrive en second)", async () => {
+    await fresh();
+    await login();
+    const e = S.addExpense(exp({ note: "base" }));
+    await Y.syncNow();
+    await useDevice("B"); await login();
+    await useDevice("A");
+    S.updateExpense(e.id, { note: "A (ancienne)" });
+    await sleep(25);
+    await useDevice("B");
+    S.updateExpense(e.id, { note: "B (récente)" });
+    await Y.syncNow();                                   // B pousse la plus récente
+    eq(srv.row(e.id).data.note, "B (récente)");
+    await useDevice("A");
+    await Y.syncNow();                                   // A pousse la plus ancienne : ignorée par le serveur, puis A reçoit B
+    eq(srv.row(e.id).data.note, "B (récente)", "le serveur garde la plus récente");
+    eq(S.getExpense(e.id).note, "B (récente)", "A converge");
+    eq(dirtyCount(), 0);
+    await useDevice("B"); await Y.syncNow();
+    eq(S.getExpense(e.id).note, "B (récente)");
+  });
+  test("conflit : la plus récente gagne aussi quand elle est poussée en premier côté A", async () => {
+    await fresh();
+    await login();
+    const e = S.addExpense(exp({ note: "base" }));
+    await Y.syncNow();
+    await useDevice("B"); await login();
+    S.updateExpense(e.id, { note: "B (ancienne)" });
+    await sleep(25);
+    await useDevice("A");
+    S.updateExpense(e.id, { note: "A (récente)" });
+    await Y.syncNow();
+    await useDevice("B");
+    await Y.syncNow();
+    eq(S.getExpense(e.id).note, "A (récente)");
+    eq(srv.row(e.id).data.note, "A (récente)");
+  });
+  test("modification locale contre suppression distante : le plus récent l'emporte", async () => {
+    await fresh();
+    await login();
+    const e = S.addExpense(exp({ note: "base" }));
+    await Y.syncNow();
+    await useDevice("B"); await login();
+    S.deleteExpense(e.id);
+    await Y.syncNow();                                   // suppression à t1
+    await sleep(25);
+    await useDevice("A");
+    S.updateExpense(e.id, { note: "modifiée après" });   // t2 > t1
+    await Y.syncNow();
+    eq(S.getExpense(e.id).note, "modifiée après", "la modification postérieure survit");
+    eq(srv.row(e.id).deleted, false);
+    await useDevice("B"); await Y.syncNow();
+    eq(S.getExpense(e.id).note, "modifiée après", "elle revient sur B");
+  });
+
+  // ═══ Curseur, paquets, pagination ═══
+  test("paquets de 500, pagination de 1000, curseur reculé de 5 s, user_id jamais envoyé", async () => {
+    await fresh();
+    await login();
+    srv.log.length = 0;
+    const many = [];
+    for (let k = 0; k < 1200; k++) many.push({ id: "e_perf_" + k, date: today, amount: 1 + (k % 50), categoryId: "food", note: "n" + k, createdAt: Date.now(), updatedAt: Date.now() });
+    S.importJSON(JSON.stringify({ version: 1, expenses: many }), { mode: "merge" });   // (ids fixes : pas de collision aléatoire)
+    eq(dirtyCount(), 1200, "l'import marque les 1200 éléments comme sales");
+    await Y.syncNow();
+    const posts = srv.log.filter(l => l.method === "POST");
+    eq(posts.map(p => p.n), [500, 500, 200], "1200 dépenses envoyées par paquets de 500");
+    ok(posts.every(p => /on_conflict=user_id(,|%2C)id/.test(p.search)), "on_conflict");
+    eq(dirtyCount(), 0);
+    await useDevice("B");
+    srv.log.length = 0;
+    await login();
+    const gets = srv.log.filter(l => l.method === "GET" && l.path === "/rest/v1/items");
+    eq(gets.length, 2, "1000 puis le reste");
+    ok(/server_at=gt\./.test(gets[1].search) && /%2B/.test(gets[1].search), "curseur encodé dans l'URL");
+    ok(!/server_at=gt\./.test(gets[0].search), "premier tirage sans curseur");
+    ok(/order=server_at\.asc/.test(gets[0].search) && /limit=1000/.test(gets[0].search));
+    eq(S.getExpenses({}).length, 1200);
+    const cur = Date.parse(S.getSyncState().cursor);
+    ok(Math.abs(cur - (srv.lastMs - 5000)) <= 2, "curseur = dernier server_at − 5 s");
+  });
+  test("tirage incrémental : seules les nouveautés sont reprises, le curseur avance", async () => {
+    await fresh();
+    await login();
+    S.addExpense(exp({ note: "un" }));
+    await Y.syncNow();
+    const c1 = S.getSyncState().cursor;
+    ok(c1, "curseur posé");
+    await useDevice("B"); await login();
+    await useDevice("A");
+    const e2 = S.addExpense(exp({ note: "deux" }));
+    await Y.syncNow();
+    ok(S.getSyncState().cursor > c1, "curseur avancé");
+    await useDevice("B");
+    srv.log.length = 0;
+    await Y.syncNow();
+    const gets = srv.log.filter(l => l.method === "GET");
+    eq(gets.length, 1);
+    ok(S.getExpense(e2.id), "nouveauté reçue");
+    eq(srv.log.filter(l => l.method === "POST").length, 0, "rien à envoyer : pas de POST");
+  });
+
+  // ═══ Jetons ═══
+  test("réponse 401 : un seul renouvellement du jeton puis un seul retry", async () => {
+    await fresh();
+    await login();
+    const old = S.getSyncState().session.access_token;
+    srv.expireAccess();                                  // le serveur refuse l'ancien jeton alors que le client le croit valide
+    const e = S.addExpense(exp({ note: "après 401" }));
+    srv.log.length = 0; srv.refreshCalls = 0; srv.count401 = 0;
+    await Y.syncNow();
+    eq(Y.status().state, "idle");
+    eq(srv.refreshCalls, 1, "un seul renouvellement");
+    eq(srv.count401, 1, "une seule réponse 401");
+    ok(S.getSyncState().session.access_token !== old, "nouveau jeton enregistré");
+    ok(srv.row(e.id), "donnée envoyée après le retry");
+    eq(dirtyCount(), 0);
+  });
+  test("jeton proche de l'expiration : renouvelé avant la requête", async () => {
+    await fresh();
+    await login();
+    const s = S.getSyncState().session;
+    S.setSyncState({ session: Object.assign({}, s, { expires_at: Date.now() + 10000 }) });
+    srv.refreshCalls = 0; srv.count401 = 0;
+    S.addExpense(exp());
+    await Y.syncNow();
+    eq(Y.status().state, "idle");
+    eq(srv.refreshCalls, 1);
+    eq(srv.count401, 0, "aucun 401 : renouvelé en amont");
+    ok(S.getSyncState().session.expires_at - Date.now() > 3000000, "nouvelle échéance enregistrée");
+  });
+  test("renouvellement refusé : déconnexion douce, données locales conservées, reconnexion possible", async () => {
+    await fresh();
+    await login();
+    srv.expireAccess(); srv.revokeRefresh();
+    const e = S.addExpense(exp({ note: "locale" }));
+    await Y.syncNow();
+    eq(Y.status().state, "signedout");
+    ok(/reconnect/i.test(Y.status().error || ""), "message : " + Y.status().error);
+    eq(S.getSyncState().session, null, "session effacée");
+    ok(S.getExpense(e.id), "donnée locale conservée");
+    eq(dirtyCount(), 1, "toujours à envoyer");
+    await login();
+    eq(Y.status().state, "idle");
+    ok(srv.row(e.id), "envoyée après reconnexion");
+  });
+
+  // ═══ Réseau, erreurs serveur, états ═══
+  test("hors ligne : état « offline », données gardées à envoyer, reprise au déclencheur suivant", async () => {
+    await fresh();
+    await login();
+    const e = S.addExpense(exp({ note: "hors ligne" }));
+    srv.offline = true;
+    await Y.syncNow();
+    eq(Y.status().state, "offline");
+    eq(dirtyCount(), 1);
+    srv.offline = false;
+    await Y.syncNow();
+    eq(Y.status().state, "idle");
+    eq(dirtyCount(), 0);
+    ok(srv.row(e.id));
+  });
+  test("erreur serveur : état « error » avec message français, puis reprise", async () => {
+    await fresh();
+    await login();
+    S.addExpense(exp());
+    srv.failAll = { status: 503 };
+    await Y.syncNow();
+    eq(Y.status().state, "error");
+    ok(/serveur/i.test(Y.status().error) && /503/.test(Y.status().error), "message : " + Y.status().error);
+    eq(dirtyCount(), 1);
+    srv.failAll = { status: 404, body: { code: "PGRST205", message: "Could not find the table 'public.items'" } };
+    await Y.syncNow();
+    ok(/schema\.sql/.test(Y.status().error), "table absente : " + Y.status().error);
+    srv.failAll = null;
+    await Y.syncNow();
+    eq(Y.status().state, "idle");
+    eq(Y.status().error, null);
+  });
+  test("événements sync:status : syncing puis idle", async () => {
+    await fresh();
+    await login();
+    statuses.length = 0;
+    S.addExpense(exp());
+    await Y.syncNow();
+    eq(statuses, ["syncing", "idle"]);
+    statuses.length = 0;
+    srv.offline = true; S.addExpense(exp());
+    await Y.syncNow();
+    eq(statuses, ["syncing", "offline"]);
+    srv.offline = false;
+  });
+  test("verrou : une seule synchro à la fois, une demande en cours relance UNE synchro à la fin", async () => {
+    await fresh();
+    await login();
+    srv.delay = 15;
+    srv.log.length = 0; srv.peak = 0;
+    S.addExpense(exp());
+    const p1 = Y.syncNow(), p2 = Y.syncNow(), p3 = Y.syncNow();
+    await Promise.all([p1, p2, p3]);
+    srv.delay = 1;
+    eq(srv.peak, 1, "jamais deux requêtes en parallèle");
+    eq(srv.log.filter(l => l.method === "GET").length, 2, "la synchro initiale + une seule relance");
+    eq(Y.status().state, "idle");
+  });
+  test("ce que la synchro applique n'est jamais renvoyé et n'enclenche pas de boucle", async () => {
+    await fresh();
+    await login();
+    await useDevice("B"); await login();
+    const e = S.addExpense(exp({ note: "de B" }));
+    await Y.syncNow();
+    await useDevice("A");
+    let reasons = [];
+    const spy = p => reasons.push(p.reason);
+    FIN.bus.on("data:change", spy);
+    srv.log.length = 0;
+    await Y.syncNow();
+    FIN.bus.off("data:change", spy);
+    eq(reasons, ["sync"], "un seul data:change, reason sync");
+    eq(srv.log.filter(l => l.method === "POST").length, 0, "rien renvoyé");
+    ok(S.getExpense(e.id));
+  });
+
+  // ═══ Déclencheurs (en dernier : init() branche des écouteurs permanents) ═══
+  test("déclencheurs : démarrage, 2 s après une modification locale, événement « online »", async () => {
+    await fresh();
+    await login();
+    srv.log.length = 0;
+    await Y.init();
+    await sleep(100);
+    ok(srv.count("GET", "/rest/v1/items") >= 1, "synchro au démarrage");
+    await Y.syncNow();
+    srv.log.length = 0;
+    const e = S.addExpense(exp({ note: "déclenchée" }));
+    await sleep(1000);
+    eq(srv.count("POST", "/rest/v1/items"), 0, "pas avant ~2 s (anti-rebond)");
+    await sleep(1700);
+    ok(srv.row(e.id), "envoyée automatiquement après ~2 s");
+    await sleep(100);
+    srv.log.length = 0;
+    window.dispatchEvent(new Event("online"));
+    await sleep(150);
+    ok(srv.count("GET", "/rest/v1/items") >= 1, "synchro au retour du réseau");
+    await Y.syncNow();
+  });
+
+  // ─── Exécution ───
+  (async function run(){
+    const out = document.getElementById("out");
+    let pass = 0, fail = 0;
+    for (const t of tests) {
+      const li = document.createElement("li");
+      try {
+        await t.fn();
+        pass++;
+        li.className = "ok";
+        li.innerHTML = '<span class="mark">✓</span>';
+      } catch (e) {
+        fail++;
+        li.className = "ko";
+        li.innerHTML = '<span class="mark">✗</span>';
+        const msg = document.createElement("span");
+        msg.className = "err";
+        msg.textContent = (e && e.stack) ? e.message + "\n" + e.stack.split("\n").slice(1, 3).join("\n") : String(e);
+        li.appendChild(document.createTextNode(t.name));
+        li.appendChild(msg);
+        out.appendChild(li);
+        continue;
+      }
+      li.appendChild(document.createTextNode(t.name));
+      out.appendChild(li);
+    }
+    window.fetch = realFetch;
+    window.FIN_CONFIG = {};        // les déclencheurs de FIN.sync (minuteur 60 s) restent branchés : on les neutralise
+    const total = document.getElementById("total");
+    total.textContent = pass + " / " + tests.length + " tests réussis" + (fail ? " — " + fail + " échec(s)" : " ✓");
+    total.className = fail ? "ko" : "ok";
+  })();
+})();
+</script>
+</body>
+</html>

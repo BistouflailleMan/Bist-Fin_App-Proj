@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0D1520">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Finances">
+<title>Finances</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/shell.css">
+<link rel="stylesheet" href="css/entry.css">
+<link rel="stylesheet" href="css/views.css">
+<link rel="stylesheet" href="css/income.css">
+<link rel="stylesheet" href="css/sync.css">
+</head>
+<body>
+<div class="update-banner" id="update-banner" role="status" hidden></div>
+<div class="wrap">
+
+  <!-- ══ Coque (Agent 4) ══ -->
+  <header class="head" id="app-header">
+    <div class="head-title">
+      <div class="eyebrow">Journal des dépenses</div>
+      <h1>Finances <span class="sync-status" id="sync-status"></span></h1>
+    </div>
+    <nav class="tools" id="tools" aria-label="Outils"></nav>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <!-- Revenus du mois + reste à vivre (module Revenus) -->
+  <section class="money-strip" id="money-strip" aria-label="Revenus et reste à vivre"></section>
+
+  <div class="viewbar">
+    <div class="seg" id="view-tabs" role="tablist" aria-label="Période"></div>
+    <div class="period-nav" id="period-nav"></div>
+  </div>
+
+  <main id="views">
+
+    <!-- ── Vue Jour ── -->
+    <section class="view" id="view-day" aria-label="Jour">
+      <div class="day-layout">
+        <div class="panel" id="entry-panel"></div>   <!-- Agent 2 : formulaire de saisie rapide -->
+        <div class="panel" id="day-chart"></div>     <!-- Agent 3 : total du jour + camembert -->
+        <div class="panel" id="day-list"></div>      <!-- Agent 2 : liste des dépenses du jour -->
+      </div>
+    </section>
+
+    <!-- ── Vue Semaine (Agent 3) ── -->
+    <section class="view" id="view-week" aria-label="Semaine" hidden></section>
+
+    <!-- ── Vue Mois (Agent 3) ── -->
+    <section class="view" id="view-month" aria-label="Mois" hidden></section>
+
+  </main>
+</div>
+
+<!-- Coque mobile (Agent 4) -->
+<nav class="bottom-nav" id="bottom-nav" aria-label="Navigation"></nav>
+<button class="fab" id="fab-add" type="button" aria-label="Ajouter une dépense">+</button>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<!-- Feuilles / modales (Agent 2) -->
+<div class="sheet" id="sheet-entry" hidden></div>
+<div class="modal" id="modal-categories" hidden></div>
+<div class="modal" id="modal-income" hidden></div>
+<div class="modal" id="modal-account" hidden></div>
+
+<script src="js/config.js"></script>
+<script src="js/version.js"></script>
+<script src="js/util.js"></script>
+<script src="js/store.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/views.js"></script>
+<script src="js/entry.js"></script>
+<script src="js/income.js"></script>
+<script src="js/sync.js"></script>
+<script src="js/account.js"></script>
+<script src="js/update.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

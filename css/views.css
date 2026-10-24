@@ -1,0 +1,151 @@
+/* ═══════════════════════════════════════════════════════════
+   Appli Finance — vues & graphiques (Agent 3)
+   Classes : ch- (graphiques) et vw- (vues)
+   ═══════════════════════════════════════════════════════════ */
+
+/* ─── Graphiques : donut ─── */
+.ch-donut{width:100%;margin:0 auto;}
+.ch-donut-svg{display:block;width:100%;height:auto;overflow:visible;}
+.ch-seg{cursor:pointer;outline:none;transition:transform .16s ease,opacity .16s ease,filter .16s ease;}
+.ch-donut.is-hl .ch-seg:not(.ch-on){opacity:.38;}
+.ch-seg.ch-on{filter:drop-shadow(0 2px 5px rgba(0,0,0,.55));}
+.ch-seg:focus-visible{stroke:var(--fg);stroke-width:1.5;}
+.ch-center text{font-family:var(--num);fill:var(--fg);}
+.ch-c-l{fill:var(--fg-faint) !important;letter-spacing:.14em;}
+.ch-c-l.ch-up{text-transform:uppercase;letter-spacing:.24em;}
+.ch-c-v{font-weight:700;}
+.ch-c-s{fill:var(--accent) !important;font-weight:700;}
+
+/* ─── Graphiques : barres ─── */
+.ch-bars{width:100%;}
+.ch-bars-svg{display:block;width:100%;height:auto;overflow:visible;}
+.ch-base{stroke:var(--rule);stroke-width:1;}
+.ch-bar{outline:none;}
+.ch-bar[role="button"]{cursor:pointer;}
+.ch-bar-hov{fill:var(--fg);opacity:0;transition:opacity .12s;}
+.ch-bar:hover .ch-bar-hov,.ch-bar:focus-visible .ch-bar-hov{opacity:.05;}
+.ch-bar-sel{fill:var(--accent);opacity:.09;}
+.ch-bar-v{font-family:var(--num);font-size:11px;fill:var(--fg);}
+.ch-bar-v.ch-zero{fill:var(--fg-faint);}
+.ch-bar-l{font-family:var(--num);font-size:11px;fill:var(--fg-dim);text-transform:uppercase;letter-spacing:.06em;}
+.ch-bar-s{font-family:var(--num);font-size:10px;fill:var(--fg-faint);}
+.ch-bar.is-hl .ch-bar-v,.ch-bar.is-hl .ch-bar-l,.ch-bar.is-hl .ch-bar-s{fill:var(--accent);font-weight:700;}
+
+/* ─── Graphiques : légende ─── */
+.ch-legend{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;}
+.ch-lg-row{display:block;width:100%;text-align:left;background:transparent;border:0;border-radius:var(--radius);
+  padding:8px 8px 7px;color:var(--fg);cursor:default;transition:background .12s;}
+.ch-lg-row:hover,.ch-lg-row:focus-visible{background:var(--panel-2);}
+.ch-lg-row.is-click{cursor:pointer;}
+.ch-lg-top{display:flex;align-items:center;gap:8px;min-width:0;}
+.ch-lg-dot{flex:0 0 auto;width:10px;height:10px;border-radius:50%;background:var(--c);}
+.ch-lg-ico{flex:0 0 auto;width:20px;text-align:center;font-size:15px;line-height:1;}
+.ch-lg-name{flex:1 1 auto;min-width:0;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ch-lg-amt{flex:0 0 auto;font-size:13px;color:var(--fg-dim);}
+.ch-lg-pct{flex:0 0 auto;min-width:52px;text-align:right;font-size:15px;font-weight:700;}
+.ch-lg-bar{display:block;height:5px;margin-top:6px;border-radius:3px;background:var(--rule-soft);overflow:hidden;}
+.ch-lg-bar i{display:block;height:100%;min-width:2px;border-radius:3px;background:var(--c);}
+.ch-legend-empty{text-align:center;color:var(--fg-faint);font-size:13px;padding:12px 8px;}
+
+/* ─── Vues : éléments communs ─── */
+.vw-h-date{letter-spacing:.06em;text-transform:none;color:var(--fg-dim);font-size:11px;}
+.vw-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:var(--gap);margin-bottom:var(--gap);}
+.vw-kpi{background:var(--panel);border:1px solid var(--rule);border-radius:var(--radius);padding:12px 14px;min-width:0;}
+.vw-kpi-v{font-size:22px;font-weight:700;margin-top:6px;line-height:1.15;overflow-wrap:anywhere;}
+.vw-kpi-v small{font-size:13px;font-weight:400;color:var(--fg-dim);}
+.vw-kpi-txt{font-family:var(--ui);font-size:17px;display:flex;align-items:center;gap:6px;}
+.vw-top-dot{width:10px;height:10px;border-radius:50%;background:var(--c);flex:0 0 auto;}
+.vw-kpi-s{font-size:12px;color:var(--fg-dim);margin-top:5px;}
+.vw-kpi-main .vw-kpi-v{color:var(--accent);}
+.vw-kpi-wide{grid-column:1 / -1;}
+.vw-up{color:var(--loss);}      /* plus de dépenses = mauvais */
+.vw-down{color:var(--gain);}    /* moins de dépenses = bon */
+.vw-flat{color:var(--fg-dim);}
+.vw-arrow{font-weight:700;}
+.vw-prog{height:9px;border-radius:5px;background:var(--rule-soft);overflow:hidden;margin-top:10px;}
+.vw-prog i{display:block;height:100%;border-radius:5px;transition:width .3s;}
+.vw-prog .is-ok{background:var(--gain);}
+.vw-prog .is-warn{background:var(--accent);}
+.vw-prog .is-over{background:var(--loss);}
+.vw-hint{font-size:11.5px;color:var(--fg-faint);text-align:center;margin-top:10px;}
+
+/* ─── Mise en page Semaine / Mois : gauche (barres / calendrier), droite (donut + légende) ─── */
+.vw-main{display:grid;gap:var(--gap);grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);align-items:start;}
+.vw-donut{margin-bottom:14px;}
+
+/* ─── Vue Jour ─── */
+.vw-dayview .vw-total{text-align:center;margin-bottom:6px;}
+.vw-total-v{font-size:34px;font-weight:700;color:var(--accent);margin-top:4px;line-height:1.1;}
+.vw-total-s{font-size:12px;color:var(--fg-dim);margin-top:4px;}
+.vw-dayview .vw-donut{margin-top:12px;}
+
+/* ─── Calendrier mensuel ─── */
+.vw-cal{display:flex;flex-direction:column;gap:3px;}
+.vw-cal-row{display:grid;grid-template-columns:repeat(7,minmax(0,1fr)) minmax(0,1.15fr);gap:3px;}
+.vw-dow-c{font-family:var(--num);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--fg-faint);text-align:center;padding:2px 0 4px;}
+.vw-day{position:relative;min-height:82px;border:1px solid var(--rule);border-radius:var(--radius);
+  display:flex;align-items:center;justify-content:center;padding:16px 2px 6px;cursor:pointer;
+  background:rgba(223,166,92,var(--h,0));
+  transition:border-color .12s;user-select:none;-webkit-user-select:none;}
+.vw-day.has-v{border-color:rgba(223,166,92,.35);}
+.vw-day:hover{border-color:var(--fg-faint);}
+.vw-day.is-out{opacity:.34;background:transparent;}
+.vw-day.is-today{box-shadow:inset 0 0 0 1.5px var(--accent);}
+.vw-n{position:absolute;top:3px;left:6px;font-family:var(--num);font-size:10px;color:var(--fg-faint);}
+.vw-day.has-v .vw-n{color:var(--fg-dim);}
+.vw-day.is-today .vw-n{color:var(--accent);font-weight:700;}
+.vw-amt{font-size:13px;font-weight:600;color:var(--fg);text-align:center;overflow:hidden;max-width:100%;}
+.vw-short{display:none;}
+.vw-plus{position:absolute;top:2px;right:2px;width:20px;height:20px;padding:0;border-radius:50%;
+  border:1px solid var(--rule);background:var(--panel);color:var(--accent);font-size:14px;line-height:1;
+  cursor:pointer;opacity:0;transition:opacity .12s;display:flex;align-items:center;justify-content:center;}
+.vw-day:hover .vw-plus,.vw-plus:focus-visible{opacity:1;}
+.vw-plus:hover{background:var(--accent);color:#1B1206;border-color:var(--accent);}
+@media (hover:none){ .vw-plus{display:none;} }
+
+.vw-wk{border-radius:var(--radius);background:var(--panel-2);border:1px solid var(--rule-soft);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;padding:6px 2px;
+  cursor:pointer;min-width:0;}
+.vw-wk:hover{border-color:var(--fg-faint);}
+.vw-wk-n{font-family:var(--num);font-size:9.5px;letter-spacing:.14em;color:var(--fg-faint);}
+.vw-wk-v{font-size:13px;font-weight:700;color:var(--fg-dim);}
+.vw-wk.has-v .vw-wk-v{color:var(--accent);}
+
+/* ─── Responsive : une colonne sous 900 px, donut en premier ─── */
+@media (max-width:900px){
+  .vw-main{grid-template-columns:minmax(0,1fr);}
+  .vw-side{order:-1;}
+  .vw-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;}
+  .vw-kpi-main{grid-column:1 / -1;}
+  .vw-kpi-v{font-size:20px;}
+}
+@media (max-width:560px){
+  .vw-cal-b{padding:10px 6px;}
+  .vw-day{min-height:54px;padding:14px 1px 4px;}
+  .vw-full{display:none;}
+  .vw-short{display:inline;}
+  .vw-amt{font-size:10.5px;}
+  .vw-n{font-size:9px;left:4px;top:2px;}
+  .vw-wk-v{font-size:10.5px;}
+  .vw-wk-n{font-size:8.5px;letter-spacing:.06em;}
+  .vw-dow-c{font-size:8.5px;letter-spacing:.04em;}
+  .vw-cal-row,.vw-cal{gap:2px;}
+  .vw-total-v{font-size:30px;}
+  /* Chiffres clés compacts en 2×2 pour laisser voir le donut */
+  .vw-kpis{gap:8px;}
+  .vw-kpi-main{grid-column:auto;}
+  .vw-kpi{padding:9px 11px;}
+  .vw-kpi .eyebrow{font-size:8.5px;letter-spacing:.14em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .vw-kpi-v{font-size:17px;margin-top:4px;}
+  .vw-kpi-txt{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;}
+  .vw-kpi-s{font-size:11px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .ch-lg-name{font-size:13px;}
+  .ch-lg-amt{font-size:12px;}
+  .ch-lg-pct{min-width:44px;font-size:14px;}
+}
+@media (max-width:399px){
+  /* Colonne « Semaine » masquée pour garder le calendrier lisible */
+  .vw-cal-row{grid-template-columns:repeat(7,minmax(0,1fr));}
+  .vw-wk,.vw-dow-wk{display:none;}
+}

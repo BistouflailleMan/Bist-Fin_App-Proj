@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tests — FIN.store</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; background: #0D1520; color: #E6EDF5; margin: 0; padding: 24px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  #total { font-size: 16px; font-weight: 600; margin: 8px 0 16px; }
+  #total.ok { color: #6FD5A3; }
+  #total.ko { color: #F08A80; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { padding: 3px 0; border-bottom: 1px solid #1c2a3c; }
+  li.ok .mark { color: #6FD5A3; }
+  li.ko .mark { color: #F08A80; font-weight: 700; }
+  .mark { display: inline-block; width: 1.5em; }
+  .err { display: block; margin-left: 1.5em; color: #F08A80; font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Tests — FIN.store</h1>
+<div id="total">Exécution…</div>
+<ul id="out"></ul>
+
+<script src="../js/util.js"></script>
+<script src="../js/store.js"></script>
+<script>
+(function(){
+  "use strict";
+  const S = FIN.store, U = FIN.util;
+  const tests = [];
+  const test = (name, fn) => tests.push({ name, fn });
+
+  // ─── Assertions ───
+  function ok(cond, msg){ if (!cond) throw new Error(msg || "assertion fausse"); }
+  function eq(a, b, msg){
+    const x = JSON.stringify(a), y = JSON.stringify(b);
+    if (x !== y) throw new Error((msg ? msg + " — " : "") + "attendu " + y + ", reçu " + x);
+  }
+  function throws(fn, re, msg){
+    try { fn(); } catch (e) {
+      if (re && !re.test(e.message)) throw new Error((msg || "") + " message inattendu : " + e.message);
+      return e;
+    }
+    throw new Error((msg || "devait lever une erreur") + " (aucune erreur levée)");
+  }
+
+  // ─── Adaptateur mémoire ───
+  function memAdapter(initial){
+    let saved = initial === undefined ? null : JSON.parse(JSON.stringify(initial));
+    const a = {
+      kind: "local", saves: 0, loadError: null,
+      async load(){ if (a.loadError) throw a.loadError; return saved === null ? null : JSON.parse(JSON.stringify(saved)); },
+      async save(o){ a.saves++; saved = JSON.parse(JSON.stringify(o)); },
+      get saved(){ return saved; }
+    };
+    return a;
+  }
+
+  let adapter, toasts, changes;
+  FIN.bus.on("toast", p => toasts.push(p));
+  FIN.bus.on("data:change", p => changes.push(p));
+
+  async function fresh(initial){
+    adapter = memAdapter(initial);
+    toasts = []; changes = [];
+    S.setAdapter(adapter);
+    await S.init();
+    changes = [];
+  }
+  const today = "2026-10-24";
+  const exp = (over) => Object.assign({ date: today, amount: 10, categoryId: "food", note: "" }, over || {});
+
+  // ═══ Ajout / validation ═══
+  test("addExpense : crée une dépense complète et émet data:change", async () => {
+    await fresh();
+    const e = S.addExpense({ date: today, amount: 12.5, categoryId: "food", note: "Boulangerie" });
+    ok(/^e_/.test(e.id), "id préfixé e_");
+    eq([e.date, e.amount, e.categoryId, e.note], [today, 12.5, "food", "Boulangerie"]);
+    ok(e.createdAt > 0 && e.updatedAt === e.createdAt, "horodatages");
+    eq(S.getExpenses({}).length, 1);
+    eq(changes.length, 1);
+    ok(changes[0] && typeof changes[0].reason === "string", "reason");
+  });
+  test("addExpense : rejette montants invalides", async () => {
+    await fresh();
+    [0, -3, "abc", NaN, "", null, undefined, Infinity].forEach(v => throws(() => S.addExpense(exp({ amount: v })), /montant/i, "montant " + String(v)));
+    eq(S.getExpenses({}).length, 0);
+    eq(changes.length, 0, "aucun événement sur échec");
+  });
+  test("addExpense : rejette dates invalides", async () => {
+    await fresh();
+    ["2026-02-30", "24/10/2026", "2026-13-01", "", null, undefined, "2026-1-5"].forEach(v => throws(() => S.addExpense(exp({ date: v })), /date/i, "date " + String(v)));
+    eq(S.getExpenses({}).length, 0);
+  });
+  test("addExpense : arrondi au centime et virgule décimale", async () => {
+    await fresh();
+    eq(S.addExpense(exp({ amount: 12.346 })).amount, 12.35);
+    eq(S.addExpense(exp({ amount: "12,5" })).amount, 12.5);
+    eq(S.addExpense(exp({ amount: "10,004" })).amount, 10);
+    eq(S.addExpense(exp({ amount: "7 €" })).amount, 7);
+  });
+  test("addExpense : note absente → chaîne vide, note rognée", async () => {
+    await fresh();
+    eq(S.addExpense({ date: today, amount: 1, categoryId: "food" }).note, "");
+    eq(S.addExpense(exp({ note: "  café  " })).note, "café");
+  });
+  test("addExpense : catégorie inconnue ou absente → other", async () => {
+    await fresh();
+    eq(S.addExpense(exp({ categoryId: "nimporte" })).categoryId, "other");
+    eq(S.addExpense({ date: today, amount: 1 }).categoryId, "other");
+  });
+  test("getters : copies défensives", async () => {
+    await fresh();
+    const e = S.addExpense(exp());
+    e.amount = 9999;
+    S.getExpense(e.id).note = "piraté";
+    S.getExpenses({})[0].amount = 1;
+    S.getCategories()[0].name = "piraté";
+    S.getSettings().weekStart = 5;
+    S.getUI().x = 1;
+    eq(S.getExpense(e.id).amount, 10);
+    eq(S.getExpense(e.id).note, "");
+    ok(S.getCategories()[0].name !== "piraté");
+    eq(S.getSettings().weekStart, 1);
+    eq(S.getUI(), {});
+  });
+
+  // ═══ Mise à jour ═══
+  test("updateExpense : applique le patch, met à jour updatedAt", async () => {
+    await fresh();
+    const e = S.addExpense(exp({ note: "a" }));
+    const u = S.updateExpense(e.id, { amount: "20,556", note: "b", categoryId: "fuel", date: "2026-10-01" });
+    eq([u.amount, u.note, u.categoryId, u.date], [20.56, "b", "fuel", "2026-10-01"]);
+    ok(u.updatedAt > e.updatedAt, "updatedAt augmente");
+    eq(u.createdAt, e.createdAt);
+    eq(u.id, e.id);
+    eq(changes.length, 2);
+  });
+  test("updateExpense : patch invalide → erreur et rien ne change", async () => {
+    await fresh();
+    const e = S.addExpense(exp({ note: "a" }));
+    throws(() => S.updateExpense(e.id, { note: "zzz", amount: -5 }), /montant/i);
+    throws(() => S.updateExpense(e.id, { date: "pas-une-date" }), /date/i);
+    eq(S.getExpense(e.id).note, "a", "note intacte (validation avant application)");
+    throws(() => S.updateExpense("inconnu", { note: "x" }), /introuvable/i);
+  });
+  test("updateExpense : catégorie inconnue → other", async () => {
+    await fresh();
+    const e = S.addExpense(exp());
+    eq(S.updateExpense(e.id, { categoryId: "zzz" }).categoryId, "other");
+  });
+
+  // ═══ Suppression / restauration ═══
+  test("deleteExpense : renvoie l'objet, ajoute un tombstone", async () => {
+    await fresh();
+    const e = S.addExpense(exp({ note: "x" }));
+    const d = S.deleteExpense(e.id);
+    eq(d.id, e.id);
+    eq(d.note, "x");
+    eq(S.getExpense(e.id), null);
+    eq(S.getExpenses({}).length, 0);
+    const dump = JSON.parse(S.exportJSON());
+    eq(dump.deleted.length, 1);
+    eq([dump.deleted[0].id, dump.deleted[0].type], [e.id, "expense"]);
+    ok(dump.deleted[0].deletedAt > 0);
+    throws(() => S.deleteExpense(e.id), /introuvable/i, "double suppression");
+  });
+  test("restoreExpense : réintègre et retire le tombstone", async () => {
+    await fresh();
+    const e = S.addExpense(exp({ note: "x", amount: 33 }));
+    const d = S.deleteExpense(e.id);
+    const r = S.restoreExpense(d);
+    eq([r.id, r.amount, r.note, r.date], [e.id, 33, "x", today]);
+    ok(r.updatedAt > d.updatedAt, "updatedAt plus récent");
+    eq(S.getExpenses({}).length, 1);
+    eq(JSON.parse(S.exportJSON()).deleted.length, 0, "tombstone retiré");
+    throws(() => S.restoreExpense({ id: "e_x", date: "nimp", amount: 5 }), /invalide/i);
+  });
+  test("tombstones : un seul par id, même après plusieurs cycles", async () => {
+    await fresh();
+    const e = S.addExpense(exp());
+    S.restoreExpense(S.deleteExpense(e.id));
+    S.deleteExpense(e.id);
+    eq(JSON.parse(S.exportJSON()).deleted.length, 1);
+  });
+
+  // ═══ Filtres ═══
+  test("getExpenses : bornes incluses, catégorie, tri date desc puis createdAt desc", async () => {
+    await fresh();
+    const a = S.addExpense(exp({ date: "2026-10-01", note: "a" }));
+    const b = S.addExpense(exp({ date: "2026-10-15", note: "b", categoryId: "fuel" }));
+    const c = S.addExpense(exp({ date: "2026-10-31", note: "c" }));
+    const d = S.addExpense(exp({ date: "2026-11-01", note: "d" }));
+    const e = S.addExpense(exp({ date: "2026-09-30", note: "e" }));
+    eq(S.getExpenses({ from: "2026-10-01", to: "2026-10-31" }).map(x => x.note), ["c", "b", "a"], "bornes incluses");
+    eq(S.getExpenses({ from: "2026-10-15" }).map(x => x.note), ["d", "c", "b"]);
+    eq(S.getExpenses({ to: "2026-10-01" }).map(x => x.note), ["a", "e"]);
+    eq(S.getExpenses({ categoryId: "fuel" }).map(x => x.note), ["b"]);
+    eq(S.getExpenses().length, 5, "sans argument");
+    eq(S.getExpenses({ from: "2026-12-01" }).length, 0);
+    // Même jour : le plus récemment créé d'abord (on force createdAt via import).
+    await fresh();
+    const dump = JSON.parse(JSON.stringify({ version: 1, expenses: [
+      { id: "e_1", date: today, amount: 1, categoryId: "food", note: "ancien", createdAt: 1000, updatedAt: 1000 },
+      { id: "e_2", date: today, amount: 1, categoryId: "food", note: "récent", createdAt: 2000, updatedAt: 2000 }
+    ]}));
+    S.importJSON(JSON.stringify(dump), { mode: "replace" });
+    eq(S.getExpenses({}).map(x => x.note), ["récent", "ancien"]);
+  });
+
+  // ═══ Catégories ═══
+  test("catégories par défaut au premier lancement", async () => {
+    await fresh();
+    const cats = S.getCategories();
+    eq(cats.length, U.DEFAULT_CATEGORIES.length);
+    eq(cats.map(c => c.id), U.DEFAULT_CATEGORIES.map(c => c.id));
+    ok(S.getCategory("other"), "other présente");
+    eq(S.getCategory("inconnue"), null);
+  });
+  test("archiveCategory : masquée par défaut, visible avec includeArchived, getCategory la renvoie", async () => {
+    await fresh();
+    const n = S.getCategories().length;
+    const e = S.addExpense(exp({ categoryId: "gifts" }));
+    S.archiveCategory("gifts");
+    eq(S.getCategories().length, n - 1);
+    eq(S.getCategories({ includeArchived: true }).length, n);
+    eq(S.getCategory("gifts").archived, true);
+    eq(S.getExpense(e.id).categoryId, "gifts", "la dépense garde sa catégorie archivée");
+    S.unarchiveCategory("gifts");
+    eq(S.getCategories().length, n);
+    throws(() => S.archiveCategory("other"), /autre/i, "other non archivable");
+    throws(() => S.archiveCategory("zzz"), /introuvable/i);
+  });
+  test("addCategory / updateCategory", async () => {
+    await fresh();
+    const c = S.addCategory({ name: "  Animaux ", icon: "🐶", color: "#112233" });
+    eq([c.name, c.icon, c.color, c.archived], ["Animaux", "🐶", "#112233", false]);
+    ok(c.order >= U.DEFAULT_CATEGORIES.length, "ajoutée en dernier");
+    eq(S.getCategories().slice(-1)[0].id, c.id);
+    const u = S.updateCategory(c.id, { name: "Chiens", color: "#445566" });
+    eq([u.name, u.color, u.icon], ["Chiens", "#445566", "🐶"]);
+    ok(u.updatedAt > c.updatedAt);
+    throws(() => S.addCategory({ name: "  " }), /nom/i);
+    throws(() => S.addCategory({ name: "X", color: "rouge" }), /couleur/i);
+    // une dépense peut utiliser la nouvelle catégorie
+    eq(S.addExpense(exp({ categoryId: c.id })).categoryId, c.id);
+  });
+  test("reorderCategories", async () => {
+    await fresh();
+    S.archiveCategory("gifts");
+    S.reorderCategories(["other", "food"]);
+    const ids = S.getCategories().map(c => c.id);
+    eq(ids.slice(0, 2), ["other", "food"]);
+    eq(S.getCategories({ includeArchived: true }).length, U.DEFAULT_CATEGORIES.length, "aucune perdue");
+    eq(new Set(S.getCategories({ includeArchived: true }).map(c => c.order)).size, U.DEFAULT_CATEGORIES.length, "orders uniques");
+    throws(() => S.reorderCategories("nope"), /invalide/i);
+  });
+  test("nouvelles catégories par défaut ajoutées sans écraser celles de l'utilisateur", async () => {
+    const base = U.DEFAULT_CATEGORIES.filter(c => c.id !== "gifts").map(c => Object.assign({}, c));
+    base[0].name = "Resto perso";
+    base.push({ id: "c_perso", name: "Perso", icon: "★", color: "#123456", order: 50, archived: false, updatedAt: 5 });
+    await fresh({ version: 1, expenses: [], categories: base, settings: {}, deleted: [], ui: {} });
+    ok(S.getCategory("gifts"), "gifts ajoutée");
+    eq(S.getCategory("food").name, "Resto perso", "renommage conservé");
+    ok(S.getCategory("c_perso"), "catégorie perso conservée");
+    ok(S.getCategory("gifts").order > 50, "ajoutée à la fin");
+  });
+  test("dépense chargée avec catégorie inconnue → other", async () => {
+    await fresh({ version: 1, expenses: [{ id: "e_1", date: today, amount: 5, categoryId: "disparue", note: "", createdAt: 1, updatedAt: 1 }] });
+    eq(S.getExpense("e_1").categoryId, "other");
+  });
+
+  // ═══ Réglages / UI ═══
+  test("settings : valeurs par défaut, patch, validation", async () => {
+    await fresh();
+    eq([S.getSettings().weekStart, S.getSettings().currency, S.getSettings().monthlyBudget], [1, "EUR", null]);
+    S.setSettings({ weekStart: 0, monthlyBudget: "1500,5" });
+    eq([S.getSettings().weekStart, S.getSettings().monthlyBudget], [0, 1500.5]);
+    S.setSettings({ monthlyBudget: null });
+    eq(S.getSettings().monthlyBudget, null);
+    ok(S.getSettings().updatedAt > 0);
+    throws(() => S.setSettings({ weekStart: 9 }), /semaine/i);
+    throws(() => S.setSettings({ monthlyBudget: -4 }), /budget/i);
+    eq(S.getSettings().weekStart, 0);
+  });
+  test("setUI / getUI : persisté sans émettre data:change", async () => {
+    await fresh();
+    S.setUI({ view: "month", zoom: 1.2 });
+    S.setUI({ view: "week" });
+    eq(S.getUI(), { view: "week", zoom: 1.2 });
+    eq(changes.length, 0, "pas de data:change");
+    await S.flush();
+    eq(adapter.saved.ui, { view: "week", zoom: 1.2 });
+  });
+
+  // ═══ Persistance ═══
+  test("sauvegarde débouncée + flush, et rechargement identique", async () => {
+    await fresh();
+    await S.flush();
+    const n = adapter.saves;
+    const e = S.addExpense(exp({ note: "persist" }));
+    eq(adapter.saves, n, "pas d'écriture immédiate");
+    await S.flush();
+    eq(adapter.saves, n + 1);
+    eq(adapter.saved.expenses.length, 1);
+    S.setAdapter(adapter);
+    await S.init();
+    eq(S.getExpense(e.id).note, "persist");
+    eq(S.getCategories().length, U.DEFAULT_CATEGORIES.length);
+  });
+  test("sauvegarde automatique après ~250 ms", async () => {
+    await fresh();
+    await S.flush();
+    const n = adapter.saves;
+    S.addExpense(exp());
+    await new Promise(r => setTimeout(r, 450));
+    eq(adapter.saves, n + 1);
+  });
+  test("lecture impossible : toast, aucune écriture, données existantes préservées", async () => {
+    adapter = memAdapter({ version: 1, expenses: [] });
+    adapter.loadError = new Error("fichier corrompu");
+    toasts = []; changes = [];
+    S.setAdapter(adapter);
+    await S.init();
+    ok(toasts.length === 1 && /fichier corrompu/.test(toasts[0].text), "toast d'erreur");
+    S.addExpense(exp());
+    await S.flush();
+    await new Promise(r => setTimeout(r, 350));
+    eq(adapter.saves, 0, "aucune écriture");
+  });
+  test("échec d'écriture : toast, pas d'exception", async () => {
+    await fresh();
+    adapter.save = async () => { throw new Error("disque plein"); };
+    S.addExpense(exp());
+    await S.flush();
+    ok(toasts.some(t => /disque plein/.test(t.text)), "toast d'échec");
+    eq(S.getExpenses({}).length, 1, "données en mémoire conservées");
+  });
+  test("fichier d'une version plus récente refusé à la lecture", async () => {
+    await fresh({ version: 99, expenses: [] });
+    ok(toasts.length === 1, "toast");
+    S.addExpense(exp());
+    await S.flush();
+    eq(adapter.saves, 0);
+  });
+  test("storageInfo", async () => {
+    await fresh();
+    eq(S.storageInfo(), { kind: "local" });
+    ok(S._adapter === adapter, "_adapter exposé");
+    S.openDataFolder(); // no-op hors Electron
+  });
+
+  // ═══ Import / export JSON ═══
+  test("exportJSON → importJSON(replace) : aller-retour", async () => {
+    await fresh();
+    S.addExpense(exp({ amount: 5, note: "un" }));
+    S.addExpense(exp({ amount: 6, note: "deux", categoryId: "fuel" }));
+    S.addCategory({ name: "Perso", color: "#abcdef" });
+    S.setSettings({ weekStart: 0 });
+    const json = S.exportJSON();
+    const before = S.getExpenses({}).map(e => e.id).sort();
+    await fresh();
+    const r = S.importJSON(json, { mode: "replace" });
+    eq(r.added, 2);
+    eq(r.updated, 0);
+    eq(S.getExpenses({}).map(e => e.id).sort(), before);
+    eq(S.getSettings().weekStart, 0);
+    ok(S.getCategories().some(c => c.name === "Perso"));
+    eq(changes.length, 1);
+  });
+  test("importJSON(replace) : efface l'existant", async () => {
+    await fresh();
+    S.addExpense(exp({ note: "local" }));
+    const file = JSON.stringify({ version: 1, expenses: [{ id: "e_f", date: today, amount: 3, categoryId: "food", note: "fichier", createdAt: 1, updatedAt: 1 }] });
+    S.importJSON(file, { mode: "replace" });
+    eq(S.getExpenses({}).map(e => e.note), ["fichier"]);
+    eq(S.getCategories().length, U.DEFAULT_CATEGORIES.length, "catégories par défaut recréées");
+  });
+  test("importJSON(merge) : ajoute, le plus récent updatedAt gagne", async () => {
+    await fresh({ version: 1, expenses: [
+      { id: "e_a", date: today, amount: 1, categoryId: "food", note: "local-a", createdAt: 1000, updatedAt: 5000 },
+      { id: "e_b", date: today, amount: 2, categoryId: "food", note: "local-b", createdAt: 1000, updatedAt: 5000 },
+      { id: "e_c", date: today, amount: 3, categoryId: "food", note: "local-c", createdAt: 1000, updatedAt: 5000 }
+    ]});
+    const file = JSON.stringify({ version: 1, expenses: [
+      { id: "e_a", date: today, amount: 99, categoryId: "food", note: "fichier-a", createdAt: 1000, updatedAt: 6000 },  // plus récent → gagne
+      { id: "e_b", date: today, amount: 98, categoryId: "food", note: "fichier-b", createdAt: 1000, updatedAt: 4000 },  // plus ancien → perd
+      { id: "e_c", date: today, amount: 97, categoryId: "food", note: "fichier-c", createdAt: 1000, updatedAt: 5000 },  // égalité → local gagne
+      { id: "e_d", date: today, amount: 4, categoryId: "food", note: "fichier-d", createdAt: 1000, updatedAt: 1000 }     // nouveau
+    ]});
+    const r = S.importJSON(file, { mode: "merge" });
+    eq([r.added, r.updated], [1, 1]);
+    eq(S.getExpense("e_a").note, "fichier-a");
+    eq(S.getExpense("e_b").note, "local-b");
+    eq(S.getExpense("e_c").note, "local-c");
+    eq(S.getExpense("e_d").note, "fichier-d");
+    eq(S.getExpenses({}).length, 4);
+  });
+  test("importJSON(merge) : tombstones respectés", async () => {
+    await fresh();
+    const e = S.addExpense(exp({ note: "x" }));
+    S.deleteExpense(e.id);
+    const old = { id: e.id, date: today, amount: 1, categoryId: "food", note: "ancienne version", createdAt: 1, updatedAt: 1 };
+    let r = S.importJSON(JSON.stringify({ version: 1, expenses: [old] }), { mode: "merge" });
+    eq(r.added, 0, "pas de résurrection par une version plus ancienne");
+    eq(S.getExpense(e.id), null);
+    const newer = Object.assign({}, old, { updatedAt: Date.now() + 100000, note: "modifiée après" });
+    r = S.importJSON(JSON.stringify({ version: 1, expenses: [newer] }), { mode: "merge" });
+    eq(r.added, 1, "modification postérieure à la suppression → réapparaît");
+    eq(JSON.parse(S.exportJSON()).deleted.length, 0, "tombstone retiré");
+    // suppression venue du fichier
+    await fresh();
+    const f = S.addExpense(exp());
+    const del = { version: 1, expenses: [], deleted: [{ id: f.id, type: "expense", deletedAt: Date.now() + 1000 }] };
+    S.importJSON(JSON.stringify(del), { mode: "merge" });
+    eq(S.getExpense(f.id), null, "suppression distante appliquée");
+  });
+  test("importJSON(merge) : catégories fusionnées, catégorie inconnue → other", async () => {
+    await fresh();
+    const file = JSON.stringify({ version: 1,
+      categories: [{ id: "c_new", name: "Nouvelle", icon: "N", color: "#010203", order: 0, archived: false, updatedAt: 10 },
+                   { id: "food", name: "Miam", icon: "M", color: "#ffffff", order: 0, archived: false, updatedAt: Date.now() + 5000 }],
+      expenses: [{ id: "e_1", date: today, amount: 5, categoryId: "c_new", note: "", createdAt: 1, updatedAt: 1 },
+                 { id: "e_2", date: today, amount: 5, categoryId: "fantome", note: "", createdAt: 1, updatedAt: 1 }] });
+    S.importJSON(file, { mode: "merge" });
+    ok(S.getCategory("c_new"), "nouvelle catégorie");
+    eq(S.getCategory("food").name, "Miam", "catégorie plus récente gagne");
+    eq(S.getExpense("e_1").categoryId, "c_new");
+    eq(S.getExpense("e_2").categoryId, "other");
+  });
+  test("importJSON : refuse les fichiers invalides sans rien modifier", async () => {
+    await fresh();
+    const keep = S.addExpense(exp({ note: "garde" }));
+    changes = [];
+    const bad = [
+      "",
+      "pas du json {",
+      "[]",
+      "42",
+      "null",
+      JSON.stringify({ version: 1 }),
+      JSON.stringify({ version: 1, expenses: "x" }),
+      JSON.stringify({ version: 1, expenses: [{ id: "e", date: "2026-02-31", amount: 5 }] }),
+      JSON.stringify({ version: 1, expenses: [{ id: "e", date: today, amount: -5 }] }),
+      JSON.stringify({ version: 1, expenses: [42] }),
+      JSON.stringify({ version: 1, expenses: [], categories: "x" }),
+      JSON.stringify({ version: 1, expenses: [], settings: [] }),
+      JSON.stringify({ version: 999, expenses: [] })
+    ];
+    bad.forEach(txt => {
+      ["replace", "merge"].forEach(mode => {
+        const err = throws(() => S.importJSON(txt, { mode }), null, "rejet de " + txt.slice(0, 30));
+        ok(err instanceof Error && err.message.length > 10, "message d'erreur");
+        ok(/[éèàêç]|fichier|invalide|vide/i.test(err.message), "message en français : " + err.message);
+      });
+    });
+    eq(S.getExpenses({}).map(e => e.note), ["garde"], "données intactes");
+    eq(changes.length, 0, "aucun data:change");
+    throws(() => S.importJSON("{}", { mode: "bizarre" }), /mode/i);
+    ok(S.getExpense(keep.id));
+  });
+
+  // ═══ CSV ═══
+  test("exportCSV : BOM, séparateur ';', virgule décimale, échappement", async () => {
+    await fresh();
+    S.addExpense({ date: "2026-10-24", amount: 12.5, categoryId: "food", note: "Boulangerie" });
+    S.addExpense({ date: "2026-10-23", amount: 1234, categoryId: "groceries", note: 'a;b "c"' });
+    S.addExpense({ date: "2026-10-25", amount: 3, categoryId: "other", note: "" });
+    const csv = S.exportCSV();
+    eq(csv.charCodeAt(0), 0xFEFF, "BOM UTF-8");
+    const lines = csv.slice(1).split("\r\n").filter(Boolean);
+    eq(lines[0], "Type;Date;Catégorie;Montant;Note");
+    eq(lines.length, 4);
+    eq(lines[1], 'Dépense;2026-10-23;Courses;1234,00;"a;b ""c"""', "échappement ; et \"");
+    eq(lines[2], "Dépense;2026-10-24;Nourriture;12,50;Boulangerie");
+    eq(lines[3], "Dépense;2026-10-25;Autre;3,00;");
+    ok(!/\d\.\d/.test(lines.slice(1).join("")), "pas de point décimal");
+  });
+  test("exportCSV : vide → en-tête seul", async () => {
+    await fresh();
+    eq(S.exportCSV(), "﻿Type;Date;Catégorie;Montant;Note\r\n");
+  });
+
+  // ═══ Intégration FIN.util.summarize ═══
+  test("summarize sur des données du store", async () => {
+    await fresh();
+    S.addExpense(exp({ amount: 10, categoryId: "food", date: "2026-10-24" }));
+    S.addExpense(exp({ amount: 20.5, categoryId: "food", date: "2026-10-24" }));
+    S.addExpense(exp({ amount: 69.5, categoryId: "fuel", date: "2026-10-25" }));
+    const list = S.getExpenses({ from: "2026-10-24", to: "2026-10-25" });
+    const sum = U.summarize(list, S.getCategories({ includeArchived: true }));
+    eq(sum.total, 100);
+    eq(sum.count, 3);
+    eq(sum.byCategory.map(x => x.category.id), ["fuel", "food"], "trié décroissant");
+    eq(sum.byCategory.map(x => x.total), [69.5, 30.5]);
+    eq(sum.byCategory.map(x => Math.round(x.pct * 10) / 10), [69.5, 30.5]);
+    eq(sum.byCategory[1].count, 2);
+    eq(sum.byDay["2026-10-24"], 30.5);
+    eq(sum.byDay["2026-10-25"], 69.5);
+    eq(Object.keys(sum.byDay).length, 2);
+    // catégorie archivée : toujours résolue grâce à includeArchived
+    S.archiveCategory("fuel");
+    const sum2 = U.summarize(S.getExpenses({}), S.getCategories({ includeArchived: true }));
+    eq(sum2.byCategory[0].category.name, "Essence");
+  });
+
+  // ═══ Revenus ═══
+  const inc = (over) => Object.assign({ date: today, amount: 2100, kind: "salary", label: "Salaire" }, over || {});
+
+  test("addIncome : crée un revenu complet et émet data:change", async () => {
+    await fresh();
+    const i = S.addIncome({ date: "2026-10-01", amount: 2100.5, kind: "salary", label: "Salaire octobre" });
+    ok(/^i_/.test(i.id), "id préfixé i_");
+    eq([i.date, i.amount, i.kind, i.label], ["2026-10-01", 2100.5, "salary", "Salaire octobre"]);
+    ok(i.createdAt > 0 && i.updatedAt === i.createdAt, "horodatages");
+    eq(S.getIncomes({}).length, 1);
+    eq(S.getExpenses({}).length, 0, "pas mélangé aux dépenses");
+    eq(changes.length, 1);
+    ok(changes[0] && typeof changes[0].reason === "string", "reason");
+  });
+  test("addIncome : rejette montants et dates invalides", async () => {
+    await fresh();
+    [0, -3, "abc", NaN, "", null, undefined, Infinity].forEach(v => throws(() => S.addIncome(inc({ amount: v })), /montant/i, "montant " + String(v)));
+    ["2026-02-30", "24/10/2026", "2026-13-01", "", null, undefined].forEach(v => throws(() => S.addIncome(inc({ date: v })), /date/i, "date " + String(v)));
+    eq(S.getIncomes({}).length, 0);
+    eq(changes.length, 0, "aucun événement sur échec");
+  });
+  test("addIncome : arrondi au centime et virgule décimale", async () => {
+    await fresh();
+    eq(S.addIncome(inc({ amount: 12.346 })).amount, 12.35);
+    eq(S.addIncome(inc({ amount: "1 500,5" })).amount, 1500.5);
+    eq(S.addIncome(inc({ amount: "7 €" })).amount, 7);
+  });
+  test("addIncome : kind inconnu → other, libellé rogné / tronqué / par défaut", async () => {
+    await fresh();
+    eq(S.addIncome(inc({ kind: "bizarre", label: undefined })).kind, "other");
+    eq(S.addIncome({ date: today, amount: 5 }).kind, "other");
+    eq(S.addIncome({ date: today, amount: 5, kind: "salary" }).label, "Salaire");
+    eq(S.addIncome({ date: today, amount: 5, kind: "other" }).label, "Autre rentrée");
+    eq(S.addIncome({ date: today, amount: 5, kind: "salary", label: "   " }).label, "Salaire", "libellé blanc → défaut");
+    eq(S.addIncome({ date: today, amount: 5, kind: "other", label: "  Vinted  " }).label, "Vinted");
+    eq(S.addIncome({ date: today, amount: 5, kind: "other", label: "x".repeat(100) }).label.length, 60, "max 60 caractères");
+  });
+  test("incomes : copies défensives", async () => {
+    await fresh();
+    const i = S.addIncome(inc());
+    i.amount = 9999;
+    S.getIncome(i.id).label = "piraté";
+    S.getIncomes({})[0].amount = 1;
+    eq(S.getIncome(i.id).amount, 2100);
+    eq(S.getIncome(i.id).label, "Salaire");
+    eq(S.getIncome("inconnu"), null);
+  });
+  test("updateIncome : applique le patch, met à jour updatedAt", async () => {
+    await fresh();
+    const i = S.addIncome(inc());
+    const u = S.updateIncome(i.id, { amount: "2 200,556", label: "Salaire + prime", kind: "other", date: "2026-10-02" });
+    eq([u.amount, u.label, u.kind, u.date], [2200.56, "Salaire + prime", "other", "2026-10-02"]);
+    ok(u.updatedAt > i.updatedAt, "updatedAt augmente");
+    eq([u.id, u.createdAt], [i.id, i.createdAt]);
+    eq(changes.length, 2);
+    // libellé par défaut qui suit le changement de nature
+    const s = S.addIncome({ date: today, amount: 5, kind: "salary" });
+    eq(S.updateIncome(s.id, { kind: "other" }).label, "Autre rentrée");
+    eq(S.updateIncome(s.id, { label: "" }).label, "Autre rentrée", "libellé vidé → défaut");
+  });
+  test("updateIncome : patch invalide → erreur et rien ne change", async () => {
+    await fresh();
+    const i = S.addIncome(inc({ label: "a" }));
+    throws(() => S.updateIncome(i.id, { label: "zzz", amount: -5 }), /montant/i);
+    throws(() => S.updateIncome(i.id, { date: "pas-une-date" }), /date/i);
+    eq(S.getIncome(i.id).label, "a", "libellé intact");
+    throws(() => S.updateIncome("inconnu", { label: "x" }), /introuvable/i);
+  });
+  test("deleteIncome / restoreIncome : tombstone type income, un seul par id", async () => {
+    await fresh();
+    const i = S.addIncome(inc({ amount: 33, label: "Prime", kind: "other" }));
+    const d = S.deleteIncome(i.id);
+    eq([d.id, d.amount, d.label], [i.id, 33, "Prime"]);
+    eq(S.getIncome(i.id), null);
+    const dump = JSON.parse(S.exportJSON());
+    eq(dump.incomes.length, 0);
+    eq(dump.deleted.length, 1);
+    eq([dump.deleted[0].id, dump.deleted[0].type], [i.id, "income"]);
+    ok(dump.deleted[0].deletedAt > 0);
+    throws(() => S.deleteIncome(i.id), /introuvable/i, "double suppression");
+    const r = S.restoreIncome(d);
+    eq([r.id, r.amount, r.label, r.kind], [i.id, 33, "Prime", "other"]);
+    ok(r.updatedAt > d.updatedAt, "updatedAt plus récent");
+    eq(S.getIncomes({}).length, 1);
+    eq(JSON.parse(S.exportJSON()).deleted.length, 0, "tombstone retiré");
+    throws(() => S.restoreIncome({ id: "i_x", date: "nimp", amount: 5 }), /invalide/i);
+    S.deleteIncome(i.id);
+    S.restoreIncome(r);
+    S.deleteIncome(i.id);
+    eq(JSON.parse(S.exportJSON()).deleted.length, 1, "un seul tombstone");
+  });
+  test("tombstone d'un revenu : le type survit à un rechargement", async () => {
+    await fresh();
+    const i = S.addIncome(inc());
+    S.deleteIncome(i.id);
+    await S.flush();
+    S.setAdapter(adapter);
+    await S.init();
+    const dump = JSON.parse(S.exportJSON());
+    eq(dump.deleted.map(t => t.type), ["income"]);
+  });
+  test("getIncomes : bornes incluses, kind, tri date desc puis createdAt desc", async () => {
+    await fresh();
+    S.addIncome(inc({ date: "2026-10-01", label: "a" }));
+    S.addIncome(inc({ date: "2026-10-15", label: "b", kind: "other" }));
+    S.addIncome(inc({ date: "2026-10-31", label: "c", kind: "other" }));
+    S.addIncome(inc({ date: "2026-11-01", label: "d" }));
+    S.addIncome(inc({ date: "2026-09-30", label: "e" }));
+    eq(S.getIncomes({ from: "2026-10-01", to: "2026-10-31" }).map(x => x.label), ["c", "b", "a"], "bornes incluses");
+    eq(S.getIncomes({ from: "2026-10-15" }).map(x => x.label), ["d", "c", "b"]);
+    eq(S.getIncomes({ to: "2026-10-01" }).map(x => x.label), ["a", "e"]);
+    eq(S.getIncomes({ kind: "other" }).map(x => x.label), ["c", "b"]);
+    eq(S.getIncomes({ kind: "salary" }).map(x => x.label), ["d", "a", "e"]);
+    eq(S.getIncomes().length, 5, "sans argument");
+    eq(S.getIncomes({ from: "2026-12-01" }).length, 0);
+    await fresh();
+    S.importJSON(JSON.stringify({ version: 1, expenses: [], incomes: [
+      { id: "i_1", date: today, amount: 1, kind: "other", label: "ancien", createdAt: 1000, updatedAt: 1000 },
+      { id: "i_2", date: today, amount: 1, kind: "other", label: "récent", createdAt: 2000, updatedAt: 2000 }
+    ]}), { mode: "replace" });
+    eq(S.getIncomes({}).map(x => x.label), ["récent", "ancien"]);
+  });
+  test("ancien fichier sans incomes : chargé, réparé, incomes = []", async () => {
+    await fresh({ version: 1, expenses: [{ id: "e_1", date: today, amount: 5, categoryId: "food", note: "", createdAt: 1, updatedAt: 1 }] });
+    eq(S.getIncomes({}), []);
+    eq(S.getExpenses({}).length, 1);
+    await S.flush();
+    eq(adapter.saved.incomes, [], "incomes écrit à la prochaine sauvegarde");
+  });
+  test("lecture tolérante : revenus réparés, irrécupérables jetés", async () => {
+    await fresh({ version: 1, expenses: [], incomes: [
+      { id: "i_ok", date: today, amount: "1 000,5", kind: "truc", label: "  " },
+      { id: "i_mauvais", date: "nimp", amount: 5 },
+      { id: "i_neg", date: today, amount: -5 },
+      42,
+      { date: today, amount: 7, kind: "salary", label: "sans id" }
+    ]});
+    const all = S.getIncomes({});
+    eq(all.length, 2);
+    const okOne = S.getIncome("i_ok");
+    eq([okOne.amount, okOne.kind, okOne.label], [1000.5, "other", "Autre rentrée"]);
+    ok(all.some(x => /^i_/.test(x.id) && x.amount === 7), "id généré");
+  });
+
+  // ═══ Bilan mensuel ═══
+  test("monthBalance : avec revenus (salaire + autres) et dépenses", async () => {
+    await fresh();
+    S.addIncome(inc({ date: "2026-10-01", amount: 2100 }));
+    S.addIncome(inc({ date: "2026-10-10", amount: 50.5, kind: "other", label: "Vinted" }));
+    S.addIncome(inc({ date: "2026-11-01", amount: 999 }));      // autre mois
+    S.addExpense(exp({ date: "2026-10-05", amount: 10.25 }));
+    S.addExpense(exp({ date: "2026-10-31", amount: 20 }));
+    S.addExpense(exp({ date: "2026-09-30", amount: 99 }));      // autre mois
+    const b = S.monthBalance(2026, 9);                          // octobre (mois 0-11)
+    eq([b.income, b.salary, b.other, b.spent, b.remaining], [2150.5, 2100, 50.5, 30.25, 2120.25]);
+    ok(Math.abs(b.ratio - 30.25 / 2150.5) < 1e-9, "ratio = dépensé / revenus");
+    eq(Object.keys(b).sort(), ["income", "other", "ratio", "remaining", "salary", "spent"]);
+  });
+  test("monthBalance : sans revenus, ratio null et reste négatif", async () => {
+    await fresh();
+    S.addExpense(exp({ date: "2026-10-05", amount: 12.1 }));
+    S.addExpense(exp({ date: "2026-10-06", amount: 0.2 }));
+    const b = S.monthBalance(2026, 9);
+    eq([b.income, b.salary, b.other, b.spent, b.remaining, b.ratio], [0, 0, 0, 12.3, -12.3, null]);
+  });
+  test("monthBalance : mois vide, arrondi, dépenses > revenus", async () => {
+    await fresh();
+    eq(S.monthBalance(2026, 0), { income: 0, salary: 0, other: 0, spent: 0, remaining: 0, ratio: null });
+    S.addIncome(inc({ date: "2026-02-28", amount: 0.1 }));
+    S.addIncome(inc({ date: "2026-02-01", amount: 0.2, kind: "other" }));
+    S.addExpense(exp({ date: "2026-02-10", amount: 1 }));
+    const b = S.monthBalance(2026, 1);
+    eq([b.income, b.salary, b.other, b.remaining], [0.3, 0.1, 0.2, -0.7], "pas de dérive flottante");
+    ok(b.ratio > 1, "dépensé > revenus ⇒ ratio > 1");
+  });
+  test("monthBalance : se met à jour après suppression d'un revenu", async () => {
+    await fresh();
+    const i = S.addIncome(inc({ date: "2026-10-01", amount: 100 }));
+    eq(S.monthBalance(2026, 9).income, 100);
+    S.deleteIncome(i.id);
+    eq(S.monthBalance(2026, 9).income, 0);
+  });
+
+  // ═══ Import / export des revenus ═══
+  test("exportJSON → importJSON(replace) : revenus inclus", async () => {
+    await fresh();
+    S.addIncome(inc({ amount: 1800, label: "Salaire" }));
+    S.addIncome(inc({ amount: 40, kind: "other", label: "Remboursement" }));
+    S.addExpense(exp());
+    const json = S.exportJSON();
+    const before = S.getIncomes({}).map(i => i.id).sort();
+    await fresh();
+    const r = S.importJSON(json, { mode: "replace" });
+    eq(r.added, 3, "dépenses + revenus");
+    eq(S.getIncomes({}).map(i => i.id).sort(), before);
+    eq(S.getIncomes({ kind: "other" })[0].label, "Remboursement");
+    eq(changes.length, 1);
+  });
+  test("importJSON(replace) : efface les revenus existants ; fichier sans incomes → liste vide", async () => {
+    await fresh();
+    S.addIncome(inc());
+    S.importJSON(JSON.stringify({ version: 1, expenses: [] }), { mode: "replace" });
+    eq(S.getIncomes({}), []);
+  });
+  test("importJSON(merge) : fichier sans incomes valide, revenus locaux conservés", async () => {
+    await fresh();
+    const i = S.addIncome(inc());
+    S.importJSON(JSON.stringify({ version: 1, expenses: [] }), { mode: "merge" });
+    ok(S.getIncome(i.id), "revenu local conservé");
+  });
+  test("importJSON(merge) : revenus ajoutés, le plus récent updatedAt gagne", async () => {
+    await fresh({ version: 1, expenses: [], incomes: [
+      { id: "i_a", date: today, amount: 1, kind: "other", label: "local-a", createdAt: 1000, updatedAt: 5000 },
+      { id: "i_b", date: today, amount: 2, kind: "other", label: "local-b", createdAt: 1000, updatedAt: 5000 },
+      { id: "i_c", date: today, amount: 3, kind: "other", label: "local-c", createdAt: 1000, updatedAt: 5000 }
+    ]});
+    const file = JSON.stringify({ version: 1, expenses: [], incomes: [
+      { id: "i_a", date: today, amount: 99, kind: "other", label: "fichier-a", createdAt: 1000, updatedAt: 6000 },
+      { id: "i_b", date: today, amount: 98, kind: "other", label: "fichier-b", createdAt: 1000, updatedAt: 4000 },
+      { id: "i_c", date: today, amount: 97, kind: "other", label: "fichier-c", createdAt: 1000, updatedAt: 5000 },
+      { id: "i_d", date: today, amount: 4, kind: "salary", label: "fichier-d", createdAt: 1000, updatedAt: 1000 }
+    ]});
+    const r = S.importJSON(file, { mode: "merge" });
+    eq([r.added, r.updated], [1, 1]);
+    eq(S.getIncome("i_a").label, "fichier-a");
+    eq(S.getIncome("i_b").label, "local-b");
+    eq(S.getIncome("i_c").label, "local-c");
+    eq(S.getIncome("i_d").label, "fichier-d");
+    eq(S.getIncomes({}).length, 4);
+  });
+  test("importJSON(merge) : tombstones de revenus respectés", async () => {
+    await fresh();
+    const i = S.addIncome(inc({ label: "x" }));
+    S.deleteIncome(i.id);
+    const old = { id: i.id, date: today, amount: 1, kind: "other", label: "ancienne version", createdAt: 1, updatedAt: 1 };
+    let r = S.importJSON(JSON.stringify({ version: 1, expenses: [], incomes: [old] }), { mode: "merge" });
+    eq(r.added, 0, "pas de résurrection par une version plus ancienne");
+    eq(S.getIncome(i.id), null);
+    const newer = Object.assign({}, old, { updatedAt: Date.now() + 100000, label: "modifié après" });
+    r = S.importJSON(JSON.stringify({ version: 1, expenses: [], incomes: [newer] }), { mode: "merge" });
+    eq(r.added, 1, "modification postérieure à la suppression → réapparaît");
+    eq(JSON.parse(S.exportJSON()).deleted.length, 0, "tombstone retiré");
+    // suppression venue du fichier
+    await fresh();
+    const f = S.addIncome(inc());
+    const del = { version: 1, expenses: [], deleted: [{ id: f.id, type: "income", deletedAt: Date.now() + 1000 }] };
+    S.importJSON(JSON.stringify(del), { mode: "merge" });
+    eq(S.getIncome(f.id), null, "suppression distante appliquée");
+  });
+  test("importJSON : un revenu invalide fait refuser le fichier sans rien modifier", async () => {
+    await fresh();
+    const keep = S.addIncome(inc({ label: "garde" }));
+    changes = [];
+    const bad = [
+      JSON.stringify({ version: 1, expenses: [], incomes: "x" }),
+      JSON.stringify({ version: 1, expenses: [], incomes: [42] }),
+      JSON.stringify({ version: 1, expenses: [], incomes: [{ id: "i", date: "2026-02-31", amount: 5 }] }),
+      JSON.stringify({ version: 1, expenses: [], incomes: [{ id: "i", date: today, amount: -5 }] }),
+      JSON.stringify({ version: 1, expenses: [], incomes: [{ id: "i", date: today, amount: 5 }, { id: "j", date: today, amount: "abc" }] })
+    ];
+    bad.forEach(txt => {
+      ["replace", "merge"].forEach(mode => {
+        const err = throws(() => S.importJSON(txt, { mode }), /fichier invalide/i, "rejet de " + txt.slice(0, 40));
+        ok(err.message.length > 10, "message d'erreur");
+      });
+    });
+    eq(S.getIncomes({}).map(i => i.label), ["garde"], "données intactes");
+    eq(changes.length, 0, "aucun data:change");
+    ok(S.getIncome(keep.id));
+  });
+  test("sauvegarde et rechargement : revenus persistés", async () => {
+    await fresh();
+    const i = S.addIncome(inc({ label: "persist", amount: 12.5 }));
+    await S.flush();
+    eq(adapter.saved.incomes.length, 1);
+    S.setAdapter(adapter);
+    await S.init();
+    eq([S.getIncome(i.id).label, S.getIncome(i.id).amount], ["persist", 12.5]);
+  });
+
+  // ═══ CSV avec revenus ═══
+  test("exportCSV : revenus inclus (Type = Revenu, libellé dans Catégorie), tri par date", async () => {
+    await fresh();
+    S.addExpense({ date: "2026-10-24", amount: 12.5, categoryId: "food", note: "Boulangerie" });
+    S.addIncome({ date: "2026-10-30", amount: 40, kind: "other", label: "Vinted; vélo" });
+    S.addIncome({ date: "2026-10-01", amount: 2100, kind: "salary" });
+    const csv = S.exportCSV();
+    eq(csv.charCodeAt(0), 0xFEFF, "BOM UTF-8");
+    ok(csv.endsWith("\r\n"), "fin de ligne \\r\\n");
+    const lines = csv.slice(1).split("\r\n").filter(Boolean);
+    eq(lines, [
+      "Type;Date;Catégorie;Montant;Note",
+      "Revenu;2026-10-01;Salaire;2100,00;",
+      "Dépense;2026-10-24;Nourriture;12,50;Boulangerie",
+      'Revenu;2026-10-30;"Vinted; vélo";40,00;'
+    ]);
+  });
+
+  // ═══ Synchro : liste « à envoyer », records, fusion distante ═══
+  const dirtyIds = () => S.syncRecords({ dirtyOnly: true }).map(r => r.id).sort();
+  const cleanAll = () => S.markSynced(S.syncRecords({ dirtyOnly: true }));
+  const rec = (id, type, d, updated_at, deleted) => ({ id, type, data: deleted ? null : d, deleted: !!deleted, updated_at });
+
+  test("synchro : un store neuf n'a rien à envoyer, setUI ne marque rien", async () => {
+    await fresh();
+    eq(dirtyIds(), []);
+    S.setUI({ view: "week" });
+    eq(dirtyIds(), []);
+  });
+  test("synchro : chaque mutation locale marque ses ids comme sales", async () => {
+    await fresh();
+    const e = S.addExpense(exp());
+    eq(dirtyIds(), [e.id]);
+    cleanAll(); eq(dirtyIds(), []);
+    S.updateExpense(e.id, { note: "x" });
+    eq(dirtyIds(), [e.id], "update");
+    cleanAll();
+    S.deleteExpense(e.id);
+    eq(dirtyIds(), [e.id], "delete (tombstone)");
+    cleanAll();
+    S.restoreExpense(e);
+    eq(dirtyIds(), [e.id], "restore");
+    cleanAll();
+    const i = S.addIncome(inc());
+    eq(dirtyIds(), [i.id], "addIncome");
+    cleanAll();
+    S.updateIncome(i.id, { label: "z" }); eq(dirtyIds(), [i.id], "updateIncome"); cleanAll();
+    S.deleteIncome(i.id); eq(dirtyIds(), [i.id], "deleteIncome"); cleanAll();
+    S.restoreIncome(i); eq(dirtyIds(), [i.id], "restoreIncome"); cleanAll();
+    const c = S.addCategory({ name: "Perso" });
+    eq(dirtyIds(), [c.id], "addCategory"); cleanAll();
+    S.updateCategory(c.id, { name: "Perso 2" }); eq(dirtyIds(), [c.id], "updateCategory"); cleanAll();
+    S.archiveCategory("gifts"); eq(dirtyIds(), ["gifts"], "archive"); cleanAll();
+    S.unarchiveCategory("gifts"); eq(dirtyIds(), ["gifts"], "unarchive"); cleanAll();
+    S.setSettings({ weekStart: 0 }); eq(dirtyIds(), ["settings"], "setSettings"); cleanAll();
+    S.reorderCategories(["other", "food"]);
+    ok(dirtyIds().includes("other") && dirtyIds().includes("food"), "reorder marque les catégories déplacées");
+    ok(!dirtyIds().includes("settings"));
+  });
+  test("synchro : forme des records (objets, réglages, tombstones)", async () => {
+    await fresh();
+    const e = S.addExpense(exp({ note: "a" }));
+    const i = S.addIncome(inc());
+    const gone = S.addExpense(exp({ note: "b" }));
+    S.deleteExpense(gone.id);
+    const recs = S.syncRecords({ dirtyOnly: false });
+    const by = id => recs.find(r => r.id === id);
+    eq(by(e.id), { id: e.id, type: "expense", data: S.getExpense(e.id), deleted: false, updated_at: e.updatedAt });
+    eq(by(i.id).type, "income");
+    eq(by(i.id).data, S.getIncome(i.id));
+    eq(by("food").type, "category");
+    eq(by("settings").type, "settings");
+    eq(by("settings").data, S.getSettings());
+    eq(by("settings").updated_at, S.getSettings().updatedAt);
+    const t = by(gone.id);
+    eq([t.type, t.data, t.deleted], ["expense", null, true]);
+    ok(t.updated_at > 0, "updated_at = deletedAt");
+    eq(recs.length, U.DEFAULT_CATEGORIES.length + 1 + 2 + 1, "catégories + réglages + 2 objets + 1 tombstone");
+    eq(S.syncRecords({ dirtyOnly: true }).length, 3, "seuls les ids touchés : dépense, revenu, dépense supprimée");
+  });
+  test("synchro : markAllDirty renvoie tout, markSynced vide la liste", async () => {
+    await fresh();
+    S.addExpense(exp());
+    cleanAll();
+    eq(dirtyIds(), []);
+    S.markAllDirty();
+    eq(S.syncRecords({ dirtyOnly: true }).length, S.syncRecords({ dirtyOnly: false }).length);
+    cleanAll();
+    eq(dirtyIds(), []);
+  });
+  test("markSynced : une modification survenue entre-temps reste sale", async () => {
+    await fresh();
+    const e = S.addExpense(exp({ note: "v1" }));
+    const sent = S.syncRecords({ dirtyOnly: true });
+    S.updateExpense(e.id, { note: "v2" });          // arrive pendant l'envoi
+    S.markSynced(sent);
+    eq(dirtyIds(), [e.id], "reste à envoyer");
+    S.markSynced(S.syncRecords({ dirtyOnly: true }));
+    eq(dirtyIds(), []);
+    // un record non sale ou inconnu est sans effet
+    S.markSynced([{ id: "e_inconnu", updated_at: 1, deleted: false }, null, 42]);
+    eq(dirtyIds(), []);
+  });
+  test("la liste « à envoyer » et l'état de synchro survivent à un rechargement", async () => {
+    await fresh();
+    const e = S.addExpense(exp());
+    S.setSyncState({ cursor: "2026-10-24T10:00:00.000Z", email: "moi@exemple.test", lastSyncAt: 123,
+      session: { access_token: "a", refresh_token: "r", expires_at: 999 } });
+    // (l'ordre des clés de l'état est : cursor, session, email, lastSyncAt)
+    await S.flush();
+    S.setAdapter(adapter);
+    await S.init();
+    eq(dirtyIds(), [e.id]);
+    eq(S.getSyncState(), { cursor: "2026-10-24T10:00:00.000Z", session: { access_token: "a", refresh_token: "r", expires_at: 999 },
+      email: "moi@exemple.test", lastSyncAt: 123 });
+    S.getSyncState().session.access_token = "piraté";
+    eq(S.getSyncState().session.access_token, "a", "copie défensive");
+  });
+  test("exportJSON : ni liste « à envoyer » ni état de synchro (jetons)", async () => {
+    await fresh();
+    S.addExpense(exp());
+    S.setSyncState({ email: "moi@exemple.test", session: { access_token: "JETON-SECRET", refresh_token: "AUTRE-SECRET", expires_at: 1 }, cursor: "2026-01-01T00:00:00.000Z" });
+    const json = S.exportJSON();
+    ok(!/JETON-SECRET|AUTRE-SECRET|moi@exemple|dirty|"sync"|cursor/.test(json), "aucune trace de synchro dans l'export");
+    eq(Object.keys(JSON.parse(json)).sort(), ["categories", "deleted", "expenses", "incomes", "settings", "ui", "version"]);
+  });
+  test("importJSON ne touche pas à l'état de synchro (replace et merge) mais marque l'importé comme sale", async () => {
+    await fresh();
+    const local = S.addExpense(exp({ note: "locale" }));
+    cleanAll();
+    const st = { cursor: "2026-01-01T00:00:00.000Z", session: { access_token: "a", refresh_token: "r", expires_at: 9 }, email: "moi@exemple.test", lastSyncAt: 5 };
+    S.setSyncState(st);
+    const file = JSON.stringify({ version: 1, expenses: [{ id: "e_f", date: today, amount: 3, categoryId: "food", note: "fichier", createdAt: 1, updatedAt: 1 }],
+      sync: { dirty: {}, state: { cursor: "PIRATE", session: null } } });
+    S.importJSON(file, { mode: "merge" });
+    eq(S.getSyncState(), st, "merge");
+    eq(dirtyIds(), ["e_f"], "seul le nouvel élément est sale");
+    cleanAll();
+    S.importJSON(file, { mode: "replace" });
+    eq(S.getSyncState(), st, "replace");
+    ok(dirtyIds().includes(local.id), "l'élément écarté par le remplacement reçoit un tombstone à envoyer");
+    const t = S.syncRecords({ dirtyOnly: true }).find(r => r.id === local.id);
+    eq([t.deleted, t.data, t.type], [true, null, "expense"]);
+    eq(S.getExpense(local.id), null);
+  });
+
+  test("applyRemote : le plus récent updated_at gagne, rien n'est marqué sale, un seul data:change", async () => {
+    await fresh();
+    const a = S.addExpense(exp({ note: "a" }));
+    const b = S.addExpense(exp({ note: "b" }));
+    const c = S.addExpense(exp({ note: "c" }));
+    cleanAll();
+    changes = [];
+    const r = S.applyRemote([
+      rec(a.id, "expense", Object.assign({}, a, { note: "a-distant", amount: 77 }), a.updatedAt + 10),   // plus récent → appliqué
+      rec(b.id, "expense", Object.assign({}, b, { note: "b-distant" }), b.updatedAt - 1),                // plus ancien → ignoré
+      rec(c.id, "expense", Object.assign({}, c, { note: "c-distant" }), c.updatedAt),                    // égal → ignoré
+      rec("e_new", "expense", { id: "e_new", date: today, amount: "12,5", categoryId: "food", note: " neuf ", createdAt: 5 }, 50)
+    ]);
+    eq(r.applied, 2);
+    eq(S.getExpense(a.id).note, "a-distant");
+    eq(S.getExpense(a.id).updatedAt, a.updatedAt + 10);
+    eq(S.getExpense(b.id).note, "b");
+    eq(S.getExpense(c.id).note, "c");
+    eq([S.getExpense("e_new").amount, S.getExpense("e_new").note], [12.5, "neuf"], "normalisé comme à la lecture disque");
+    eq(changes.length, 1, "un seul data:change");
+    eq(changes[0].reason, "sync");
+    eq(dirtyIds(), [], "rien de sale");
+    changes = [];
+    eq(S.applyRemote([rec(b.id, "expense", b, b.updatedAt - 5)]).applied, 0);
+    eq(changes.length, 0, "aucun événement s'il n'y a eu aucun changement");
+    eq(S.applyRemote([]).applied, 0);
+  });
+  test("applyRemote : records invalides ignorés sans exception", async () => {
+    await fresh();
+    changes = [];
+    const r = S.applyRemote([
+      null, 42, "x", {},
+      { id: "e_1", type: "expense", data: { id: "e_1", date: "nimp", amount: 5 }, deleted: false, updated_at: 10 },
+      { id: "e_2", type: "expense", data: { id: "e_2", date: today, amount: -5 }, deleted: false, updated_at: 10 },
+      { id: "e_3", type: "expense", data: null, deleted: false, updated_at: 10 },
+      { id: "e_4", type: "inconnu", data: {}, deleted: false, updated_at: 10 },
+      { id: "e_5", type: "expense", data: { date: today, amount: 5 }, deleted: false, updated_at: "dix" },
+      { id: "autre", type: "settings", data: {}, deleted: false, updated_at: 10 }
+    ]);
+    eq(r.applied, 0);
+    eq(S.getExpenses({}).length, 0);
+    eq(changes.length, 0);
+    eq(S.applyRemote("pas un tableau").applied, 0, "argument invalide sans exception");
+  });
+  test("applyRemote : suppressions distantes, tombstones respectés, résurrection par un record plus récent", async () => {
+    await fresh();
+    const e = S.addExpense(exp({ note: "x" }));
+    const i = S.addIncome(inc());
+    cleanAll();
+    // suppression plus ancienne que la dernière modification locale → ignorée
+    eq(S.applyRemote([rec(e.id, "expense", null, e.updatedAt - 1, true)]).applied, 0);
+    ok(S.getExpense(e.id), "toujours là");
+    // suppression plus récente → appliquée, avec tombstone
+    const at = e.updatedAt + 100;
+    changes = [];
+    eq(S.applyRemote([rec(e.id, "expense", null, at, true), rec(i.id, "income", null, i.updatedAt + 1, true)]).applied, 2);
+    eq(changes.length, 1);
+    eq(S.getExpense(e.id), null);
+    eq(S.getIncome(i.id), null);
+    const dump = JSON.parse(S.exportJSON());
+    eq(dump.deleted.map(t => [t.id, t.type, t.deletedAt]).sort(), [[e.id, "expense", at], [i.id, "income", i.updatedAt + 1]].sort());
+    eq(dirtyIds(), []);
+    // un record plus ancien que le tombstone ne ressuscite pas l'objet
+    eq(S.applyRemote([rec(e.id, "expense", e, at - 1)]).applied, 0);
+    eq(S.getExpense(e.id), null);
+    // un record plus récent le ressuscite et retire le tombstone
+    eq(S.applyRemote([rec(e.id, "expense", Object.assign({}, e, { note: "revenu" }), at + 1)]).applied, 1);
+    eq(S.getExpense(e.id).note, "revenu");
+    eq(JSON.parse(S.exportJSON()).deleted.map(t => t.id), [i.id]);
+    // suppression d'un id jamais vu : tombstone posé (empêche une résurrection tardive)
+    S.applyRemote([rec("e_jamais_vu", "expense", null, 500, true)]);
+    eq(S.applyRemote([rec("e_jamais_vu", "expense", { id: "e_jamais_vu", date: today, amount: 1, createdAt: 1 }, 400)]).applied, 0);
+    eq(S.getExpense("e_jamais_vu"), null);
+  });
+  test("applyRemote : catégories, réglages et référence à une catégorie inconnue", async () => {
+    await fresh();
+    const cat = { id: "c_x", name: "Distante", icon: "D", color: "#010203", order: 99, archived: false, updatedAt: 70 };
+    const ex = id => ({ id, date: today, amount: 5, categoryId: "c_x", note: "", createdAt: 1, updatedAt: 70 });
+    // catégorie dans le même lot → référence conservée
+    S.applyRemote([rec("e_1", "expense", ex("e_1"), 70), rec("c_x", "category", cat, 70)]);
+    eq(S.getCategory("c_x").name, "Distante");
+    eq(S.getExpense("e_1").categoryId, "c_x");
+    // catégorie pas encore reçue : la référence est conservée (elle arrivera dans une page suivante)
+    S.applyRemote([rec("e_2", "expense", Object.assign(ex("e_2"), { categoryId: "fantome" }), 80)]);
+    eq(S.getExpense("e_2").categoryId, "fantome");
+    // catégorie existante : le plus récent gagne
+    S.applyRemote([rec("food", "category", Object.assign({}, S.getCategory("food"), { name: "Miam" }), 5000)]);
+    eq(S.getCategory("food").name, "Miam");
+    S.applyRemote([rec("food", "category", Object.assign({}, S.getCategory("food"), { name: "Vieux" }), 4000)]);
+    eq(S.getCategory("food").name, "Miam");
+    // suppression distante d'une catégorie personnalisée : les dépenses retombent sur other ; les défauts sont intouchables
+    S.applyRemote([rec("c_x", "category", null, 9000, true), rec("fuel", "category", null, 9000, true)]);
+    eq(S.getCategory("c_x"), null);
+    eq(S.getExpense("e_1").categoryId, "other");
+    ok(S.getCategory("fuel"), "catégorie par défaut conservée");
+    // réglages
+    S.applyRemote([rec("settings", "settings", { weekStart: 0, currency: "EUR", monthlyBudget: "900,5", updatedAt: 1 }, 6000)]);
+    eq([S.getSettings().weekStart, S.getSettings().monthlyBudget, S.getSettings().updatedAt], [0, 900.5, 6000]);
+    S.applyRemote([rec("settings", "settings", { weekStart: 3 }, 100)]);
+    eq(S.getSettings().weekStart, 0, "réglages plus anciens ignorés");
+    eq(dirtyIds(), [], "rien de sale");
+  });
+  test("applyRemote : retire de la liste « à envoyer » ce que la version distante a remplacé", async () => {
+    await fresh();
+    const e = S.addExpense(exp({ note: "locale" }));
+    eq(dirtyIds(), [e.id]);
+    S.applyRemote([rec(e.id, "expense", Object.assign({}, e, { note: "distante" }), e.updatedAt + 5)]);
+    eq(dirtyIds(), [], "plus rien à renvoyer");
+    const e2 = S.addExpense(exp({ note: "gagnante" }));
+    S.applyRemote([rec(e2.id, "expense", Object.assign({}, e2, { note: "perdante" }), e2.updatedAt - 5)]);
+    eq(dirtyIds(), [e2.id], "la version locale plus récente reste à envoyer");
+  });
+  test("applyRemote : sauvegarde déclenchée", async () => {
+    await fresh();
+    await S.flush();
+    const n = adapter.saves;
+    S.applyRemote([rec("e_s", "expense", { id: "e_s", date: today, amount: 2, createdAt: 3 }, 3)]);
+    await S.flush();
+    eq(adapter.saves, n + 1);
+    eq(adapter.saved.expenses.map(x => x.id), ["e_s"]);
+  });
+
+  // ─── Exécution ───
+  (async function run(){
+    const out = document.getElementById("out");
+    let pass = 0, fail = 0;
+    for (const t of tests) {
+      const li = document.createElement("li");
+      try {
+        await t.fn();
+        pass++;
+        li.className = "ok";
+        li.innerHTML = '<span class="mark">✓</span>';
+      } catch (e) {
+        fail++;
+        li.className = "ko";
+        li.innerHTML = '<span class="mark">✗</span>';
+        const msg = document.createElement("span");
+        msg.className = "err";
+        msg.textContent = (e && e.stack) ? e.message + "\n" + e.stack.split("\n").slice(1, 3).join("\n") : String(e);
+        li.appendChild(document.createTextNode(t.name));
+        li.appendChild(msg);
+        out.appendChild(li);
+        continue;
+      }
+      li.appendChild(document.createTextNode(t.name));
+      out.appendChild(li);
+    }
+    const total = document.getElementById("total");
+    total.textContent = pass + " / " + tests.length + " tests réussis" + (fail ? " — " + fail + " échec(s)" : " ✓");
+    total.className = fail ? "ko" : "ok";
+  })();
+})();
+</script>
+</body>
+</html>
