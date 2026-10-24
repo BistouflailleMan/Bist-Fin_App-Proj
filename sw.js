@@ -1,4 +1,4 @@
-const VERSION = "1.2.0";
+const VERSION = "1.2.1";
 // ═══════════ Appli Finance — service worker (hors ligne) ═══════════
 "use strict";
 
@@ -15,6 +15,7 @@ const FILES = [
   "css/views.css",
   "css/income.css",
   "css/sync.css",
+  "css/detail.css",
   "js/config.js",
   "js/version.js",
   "js/util.js",
@@ -23,6 +24,7 @@ const FILES = [
   "js/views.js",
   "js/entry.js",
   "js/income.js",
+  "js/detail.js",
   "js/sync.js",
   "js/account.js",
   "js/update.js",

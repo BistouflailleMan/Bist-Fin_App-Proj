@@ -439,6 +439,7 @@
     guard("saisie", () => FIN.entry.init());
     guard("vues", () => FIN.views.init());
     if (FIN.income) guard("revenus", () => FIN.income.init());
+    if (FIN.detail) guard("détail", () => FIN.detail.init());
     if (FIN.account) guard("compte", () => FIN.account.init());
     if (FIN.update) guard("mises à jour", () => FIN.update.init());
     if (FIN.sync) guard("synchro", () => FIN.sync.init());

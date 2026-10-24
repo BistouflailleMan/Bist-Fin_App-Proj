@@ -168,6 +168,8 @@
         p.addEventListener("focus", () => activate(i));
         p.addEventListener("blur", reset);
         p.addEventListener("click", () => {
+          // Avec onSelect, un clic ouvre le détail du segment (indices d'origine des catégories)
+          if (typeof opts.onSelect === "function") { activate(i); opts.onSelect(segs[i].idxs.slice()); return; }
           locked = (locked === i) ? null : i;
           reset();
           if (locked != null) activate(locked);

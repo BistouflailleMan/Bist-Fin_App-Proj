@@ -81,12 +81,17 @@
     return '<div class="panel vw-side"><div class="panel-h"><span>' + esc(title) + '</span></div>' +
       '<div class="panel-b"><div class="vw-donut"></div><div class="vw-legend"></div></div></div>';
   }
-  function fillSide(root, sum, centerLabel, emptyText){
+  // period = { from, to, label } : clic sur un segment ou une ligne → détail des dépenses
+  function fillSide(root, sum, centerLabel, emptyText, period){
     const d = root.querySelector(".vw-donut"), l = root.querySelector(".vw-legend");
     const items = sum.byCategory.map(b => ({ label: b.category.name, value: b.total, color: b.category.color, icon: b.category.icon }));
-    const ctl = FIN.charts.donut(d, items, { centerLabel, centerValue: eur(sum.total), size: 260 });
+    const openDetail = idxs => FIN.bus.emit("detail:open", Object.assign({
+      categoryIds: idxs.map(i => sum.byCategory[i].category.id), periodTotal: sum.total
+    }, period));
+    const ctl = FIN.charts.donut(d, items, { centerLabel, centerValue: eur(sum.total), size: 260, onSelect: openDetail });
     FIN.charts.legend(l, sum.byCategory, {
       emptyText,
+      onClick: b => openDetail([sum.byCategory.indexOf(b)]),
       onHover: i => { if (!ctl) return; if (i == null) ctl.reset(); else ctl.highlight(i); }
     });
   }
@@ -112,7 +117,7 @@
         '</div>' +
         '<div class="vw-donut"></div><div class="vw-legend"></div>' +
       '</div>';
-    fillSide(root, sum, "Total du jour", "Rien de dépensé ce jour-là.");
+    fillSide(root, sum, "Total du jour", "Rien de dépensé ce jour-là.", { from: key, to: key, label: U.fmtDayLong(state.date) });
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -167,7 +172,7 @@
       highlightKey: U.dayKey(state.date),
       onClick: k => FIN.bus.emit("goto", { view: "day", date: U.parseKey(k) })
     });
-    fillSide(root, sum, "Total semaine", "Aucune dépense cette semaine.");
+    fillSide(root, sum, "Total semaine", "Aucune dépense cette semaine.", { from, to, label: U.fmtWeekLabel(state.date, ws) });
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -237,7 +242,7 @@
         sidePanel("Répartition du mois") +
       '</div>';
 
-    fillSide(root, sum, "Total du mois", "Aucune dépense ce mois-ci.");
+    fillSide(root, sum, "Total du mois", "Aucune dépense ce mois-ci.", { from: range.from, to: range.to, label: U.fmtMonthLabel(state.date) });
   }
 
   // ─── Interactions du calendrier (délégation, posées une seule fois) ───
